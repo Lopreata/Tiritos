@@ -57,16 +57,27 @@ static int  g_width = 1280, g_height = 720;
 
 static bool pressed(int k) { return g_keys[k] && !g_prevKeys[k]; }
 
-enum ObKind { OB_WALL, OB_PILLAR, OB_COVER, OB_CONTAINER, OB_CRATE, OB_BARRIER };   // define a textura e o acabamento
+enum ObKind { OB_WALL, OB_PILLAR, OB_COVER, OB_CONTAINER, OB_CRATE, OB_BARRIER, OB_ROCK };   // define a textura e o acabamento
 struct Obstacle { float x, z, hw, hd, h, r, g, b; int kind; };
 static const int MAX_OBS = 160;
 static Obstacle g_obs[MAX_OBS];
 static int g_numObs = 0;
 
-// Cenario: uma sala fechada (galpao) de 150 x 110, com teto. As 4 primeiras caixas sao as paredes.
+// Cenario: uma arena de 150 x 110; as 4 primeiras caixas sao as paredes. Ha tres mapas, do mesmo tamanho e com os
+// mesmos pontos de nascimento: o galpao (fechado, com teto), o deserto (a ceu aberto) e a sala branca.
 static const float ROOM_X = 75.0f, ROOM_Z = 55.0f;   // meia largura e meia profundidade do piso
-static const float ROOM_H = 16.0f;                    // altura do teto
+static const float ROOM_H = 16.0f;                    // altura do teto (galpao e sala branca)
 static const int   NUM_WALLS = 4;
+enum MapId { MAP_GALPAO, MAP_DESERTO, MAP_BRANCO, NUM_MAPS };
+static const char* const MAP_NAMES[NUM_MAPS] = { "Galp\xE3o", "Deserto", "Sala branca" };
+static const char* const MAP_INFO[NUM_MAPS] = {
+    "Fechado e iluminado por cima, com muros, caixotes e containers.",
+    "A c\xE9u aberto e \xE1rido, entre rochas, ru\xEDnas e sacos de areia.",
+    "Tudo branco e com n\xE9voa: de longe quase n\xE3o se v\xEA nada." };
+static int   g_map = MAP_GALPAO;                      // mapa escolhido (na rede, o do anfitriao)
+static int   g_worldMap = -1;                         // mapa que esta montado agora (ensureWorld)
+static float g_ceil = ROOM_H;                         // altura em que tiro e camera batem no teto (o deserto nao tem)
+static const float DESERT_WALL_H = 7.0f;              // muralha em volta do deserto
 
 struct Player {
     float x = 0, y = 0, z = 0;
@@ -219,8 +230,7 @@ static void addBox(int kind, float x, float z, float hw, float hd, float h, floa
 
 // Altura do jogador = 3,06. Paredes e containers (4,6 a 5,2) escondem o personagem inteiro; caixas de ~3,5 tambem;
 // as de ~2 sao baixas e dao para pular em cima (o pulo alcanca ~2,7).
-static void initWorld() {
-    g_numObs = 0;
+static void initGalpao() {
     // paredes da sala
     const float wr = 0.42f, wg = 0.45f, wb = 0.50f;
     addBox(OB_WALL, 0.0f, -ROOM_Z - 0.5f, ROOM_X + 1.0f, 0.5f, ROOM_H, wr, wg, wb);
@@ -311,9 +321,129 @@ static void initWorld() {
         if (e.kind == OB_CONTAINER) addBox(e.kind, -e.x, -e.z, e.hw, e.hd, e.h, e.b, e.r + 0.15f, e.g);   // a gemea de outra cor
         else addBox(e.kind, -e.x, -e.z, e.hw, e.hd, e.h, e.r, e.g, e.b);
     }
+}
 
-    g_player.x = 0.0f;
-    g_player.z = 25.0f;           // as telas de escolha acontecem aqui, de frente para o meio da sala
+// Pecas dos outros mapas: cada uma ganha a sua gemea do outro lado do centro, (x, z) -> (-x, -z), para as duas equipes
+// terem o mesmo terreno. Todos os mapas tem o mesmo tamanho e deixam livres os mesmos pontos de nascimento.
+struct Piece { int kind; float x, z, hw, hd, h, r, g, b; };
+static void addPieces(const Piece* p, size_t n) {
+    for (size_t i = 0; i < n; ++i) {
+        addBox(p[i].kind, p[i].x, p[i].z, p[i].hw, p[i].hd, p[i].h, p[i].r, p[i].g, p[i].b);
+        addBox(p[i].kind, -p[i].x, -p[i].z, p[i].hw, p[i].hd, p[i].h, p[i].r, p[i].g, p[i].b);
+    }
+}
+
+// Deserto, a ceu aberto: uma muralha baixa de rocha em volta (por cima dela se ve o ceu e os morros ao longe), blocos e
+// torres de arenito, ruinas de adobe, containers enferrujados, caixotes e sacos de areia. Nas pecas de rocha e de adobe
+// a cor e um tom que multiplica a textura.
+static void initDeserto() {
+    const float t = 3.0f;
+    addBox(OB_WALL, 0.0f, -ROOM_Z - t, ROOM_X + 2.0f * t, t, DESERT_WALL_H, 1.0f, 1.0f, 1.0f);
+    addBox(OB_WALL, 0.0f,  ROOM_Z + t, ROOM_X + 2.0f * t, t, DESERT_WALL_H, 1.0f, 1.0f, 1.0f);
+    addBox(OB_WALL, -ROOM_X - t, 0.0f, t, ROOM_Z, DESERT_WALL_H, 1.0f, 1.0f, 1.0f);
+    addBox(OB_WALL,  ROOM_X + t, 0.0f, t, ROOM_Z, DESERT_WALL_H, 1.0f, 1.0f, 1.0f);
+
+    addBox(OB_ROCK, 0.0f, 0.0f, 6.5f, 4.5f, 7.5f, 1.0f, 0.97f, 0.94f);       // o rochedo do meio
+    const float kr = 0.60f, kg = 0.42f, kb = 0.24f;                          // madeira desbotada pelo sol
+    static const Piece pieces[] = {
+        // blocos de arenito: os altos escondem, os baixos dao para pular em cima
+        { OB_ROCK,  -8.5f,   2.5f, 2.5f, 3.0f, 3.6f, 0.95f, 0.95f, 0.95f },
+        { OB_ROCK, -30.0f,  14.0f, 4.0f, 3.0f, 5.5f, 1.00f, 0.96f, 0.92f },
+        { OB_ROCK, -27.0f,  36.0f, 3.0f, 4.5f, 6.5f, 0.96f, 0.98f, 1.00f },
+        { OB_ROCK, -52.0f,   6.0f, 3.5f, 5.0f, 6.0f, 1.00f, 1.00f, 1.00f },
+        { OB_ROCK, -60.0f,  34.0f, 4.5f, 3.0f, 4.6f, 0.94f, 0.92f, 0.90f },
+        { OB_ROCK, -12.0f, -18.0f, 3.0f, 3.0f, 5.0f, 1.00f, 0.95f, 0.90f },
+        { OB_ROCK, -44.0f, -22.0f, 5.0f, 3.5f, 7.0f, 0.97f, 0.97f, 0.97f },
+        { OB_ROCK, -64.0f, -16.0f, 3.0f, 4.0f, 5.5f, 1.00f, 0.97f, 0.95f },
+        { OB_ROCK, -34.0f, -40.0f, 4.0f, 3.0f, 6.0f, 0.95f, 0.95f, 0.98f },
+        { OB_ROCK, -16.0f,   8.0f, 1.6f, 1.6f, 2.0f, 0.92f, 0.92f, 0.92f },
+        { OB_ROCK, -36.0f,  22.0f, 1.8f, 1.4f, 1.8f, 0.96f, 0.93f, 0.90f },
+        { OB_ROCK,  -6.0f, -34.0f, 1.5f, 1.8f, 2.2f, 0.94f, 0.94f, 0.94f },
+        { OB_ROCK, -56.0f, -36.0f, 1.6f, 1.6f, 1.9f, 0.98f, 0.94f, 0.90f },
+        { OB_ROCK, -28.0f,   0.0f, 1.4f, 1.4f, 1.7f, 0.92f, 0.92f, 0.95f },
+        // torres de pedra
+        { OB_PILLAR, -18.0f, -30.0f, 2.0f, 2.0f, 12.0f, 1.00f, 0.96f, 0.92f },
+        { OB_PILLAR, -38.0f,   8.0f, 1.8f, 1.8f, 13.0f, 0.96f, 0.96f, 0.96f },
+        { OB_PILLAR,  -8.0f,  42.0f, 1.7f, 1.7f, 11.0f, 1.00f, 0.98f, 0.95f },
+        { OB_PILLAR, -50.0f, -48.0f, 2.0f, 2.0f, 12.0f, 0.95f, 0.93f, 0.92f },
+        // ruinas de adobe: paredes em L e soltas
+        { OB_COVER, -28.0f, -14.0f, 6.0f, 0.6f, 4.6f, 1.00f, 1.00f, 1.00f },
+        { OB_COVER, -33.4f,  -9.4f, 0.6f, 4.0f, 3.4f, 0.96f, 0.96f, 0.96f },
+        { OB_COVER, -50.0f,  24.0f, 0.6f, 6.0f, 4.6f, 1.00f, 1.00f, 1.00f },
+        { OB_COVER, -44.8f,  29.4f, 4.6f, 0.6f, 3.4f, 0.96f, 0.96f, 0.96f },
+        { OB_COVER,  13.0f,  24.0f, 5.0f, 0.6f, 4.6f, 1.00f, 0.98f, 0.96f },
+        { OB_COVER,  22.0f,   6.0f, 0.6f, 5.0f, 4.6f, 1.00f, 1.00f, 1.00f },
+        { OB_COVER, -60.0f,  -4.0f, 5.0f, 0.6f, 3.4f, 0.97f, 0.95f, 0.93f },
+        { OB_COVER,  40.0f, -35.6f, 0.6f, 5.6f, 4.6f, 1.00f, 1.00f, 1.00f },
+        // containers enferrujados
+        { OB_CONTAINER, -14.0f,  31.0f, 6.5f, 2.6f, 5.2f, 0.55f, 0.30f, 0.18f },
+        { OB_CONTAINER,  58.0f, -22.0f, 2.6f, 6.5f, 5.2f, 0.44f, 0.38f, 0.26f },
+        // caixotes
+        { OB_CRATE,   6.0f,  12.0f, 1.5f, 1.5f, 3.4f, kr, kg, kb },
+        { OB_CRATE,  22.0f, -14.0f, 1.3f, 1.3f, 2.0f, kr * 1.1f, kg * 1.1f, kb * 1.1f },
+        { OB_CRATE,  28.0f,  28.0f, 1.6f, 1.6f, 3.6f, kr, kg, kb },
+        { OB_CRATE, -70.0f,   6.0f, 1.5f, 1.5f, 3.2f, kr, kg, kb },
+        { OB_CRATE,  46.0f, -46.0f, 1.8f, 1.8f, 3.8f, kr, kg, kb },
+        { OB_CRATE,  -6.3f,  31.0f, 1.2f, 1.2f, 2.2f, kr * 0.9f, kg * 0.9f, kb * 0.9f },
+        // sacos de areia
+        { OB_BARRIER, -10.0f,  12.0f, 3.0f, 0.6f, 1.5f, 1.0f, 1.0f, 1.0f },
+        { OB_BARRIER,  26.0f, -22.0f, 0.6f, 3.0f, 1.5f, 1.0f, 1.0f, 1.0f },
+        { OB_BARRIER, -46.0f,  -8.0f, 3.0f, 0.6f, 1.5f, 1.0f, 1.0f, 1.0f },
+        { OB_BARRIER,  14.0f,  40.0f, 3.0f, 0.6f, 1.5f, 1.0f, 1.0f, 1.0f },
+    };
+    addPieces(pieces, sizeof(pieces) / sizeof(pieces[0]));
+}
+
+// Sala branca: paredes, teto, piso e blocos, tudo da mesma cor. Os blocos so se percebem de perto, pelas arestas.
+static void initBranco() {
+    const float w = 1.0f;
+    addBox(OB_WALL, 0.0f, -ROOM_Z - 0.5f, ROOM_X + 1.0f, 0.5f, ROOM_H, w, w, w);
+    addBox(OB_WALL, 0.0f,  ROOM_Z + 0.5f, ROOM_X + 1.0f, 0.5f, ROOM_H, w, w, w);
+    addBox(OB_WALL, -ROOM_X - 0.5f, 0.0f, 0.5f, ROOM_Z + 1.0f, ROOM_H, w, w, w);
+    addBox(OB_WALL,  ROOM_X + 0.5f, 0.0f, 0.5f, ROOM_Z + 1.0f, ROOM_H, w, w, w);
+
+    addBox(OB_CRATE, 0.0f, 0.0f, 3.0f, 3.0f, 3.0f, w, w, w);
+    static const Piece pieces[] = {
+        // colunas ate o teto
+        { OB_PILLAR,  -8.0f,  -8.0f, 1.5f, 1.5f, ROOM_H, w, w, w },
+        { OB_PILLAR,  -8.0f,   8.0f, 1.5f, 1.5f, ROOM_H, w, w, w },
+        { OB_PILLAR, -38.0f, -28.0f, 1.2f, 1.2f, ROOM_H, w, w, w },
+        { OB_PILLAR, -52.0f,  40.0f, 1.2f, 1.2f, ROOM_H, w, w, w },
+        { OB_PILLAR, -20.0f,  12.0f, 1.2f, 1.2f, ROOM_H, w, w, w },
+        // paredes soltas
+        { OB_COVER, -24.0f,   0.0f, 0.6f, 10.0f, 4.6f, w, w, w },
+        { OB_COVER,   0.0f, -16.0f, 10.0f, 0.6f, 4.6f, w, w, w },
+        { OB_COVER, -44.0f, -18.0f, 8.0f, 0.6f, 4.6f, w, w, w },
+        { OB_COVER, -44.0f,  18.0f, 0.6f, 8.0f, 4.6f, w, w, w },
+        { OB_COVER, -62.0f,   0.0f, 0.6f, 12.0f, 4.6f, w, w, w },
+        { OB_COVER, -30.0f, -36.0f, 0.6f, 7.0f, 4.6f, w, w, w },
+        { OB_COVER, -14.0f,  36.0f, 9.0f, 0.6f, 4.6f, w, w, w },
+        // cubos altos (escondem)
+        { OB_CRATE, -36.0f,   2.0f, 2.0f, 2.0f, 4.0f, w, w, w },
+        { OB_CRATE, -52.0f, -34.0f, 2.0f, 2.0f, 4.0f, w, w, w },
+        { OB_CRATE, -16.0f, -26.0f, 2.0f, 2.0f, 4.0f, w, w, w },
+        { OB_CRATE, -66.0f, -40.0f, 2.0f, 2.0f, 4.0f, w, w, w },
+        { OB_CRATE, -70.0f,  22.0f, 2.0f, 2.0f, 4.0f, w, w, w },
+        // cubos baixos (da para pular em cima)
+        { OB_CRATE, -14.0f,   4.0f, 1.5f, 1.5f, 2.0f, w, w, w },
+        { OB_CRATE, -30.0f,  22.0f, 1.5f, 1.5f, 2.0f, w, w, w },
+        { OB_CRATE, -50.0f,   8.0f, 1.5f, 1.5f, 2.2f, w, w, w },
+        { OB_CRATE, -22.0f, -44.0f, 1.5f, 1.5f, 2.0f, w, w, w },
+        { OB_CRATE, -56.0f, -16.0f, 1.5f, 1.5f, 2.0f, w, w, w },
+        // blocos compridos
+        { OB_CONTAINER, -40.0f,  34.0f, 6.5f, 2.6f, 5.2f, w, w, w },
+        { OB_CONTAINER, -10.0f, -38.0f, 2.6f, 5.0f, 5.2f, w, w, w },
+    };
+    addPieces(pieces, sizeof(pieces) / sizeof(pieces[0]));
+}
+
+// Monta as caixas do mapa que esta em g_worldMap.
+static void initWorld() {
+    g_numObs = 0;
+    g_ceil = ROOM_H;
+    if (g_worldMap == MAP_DESERTO) { initDeserto(); g_ceil = 1.0e4f; }      // sem teto
+    else if (g_worldMap == MAP_BRANCO) initBranco();
+    else initGalpao();
 }
 
 // Pontos de nascimento, junto as paredes: os 9 primeiros no lado sul (z > 0), os outros 9 sao os mesmos no lado norte.
@@ -1392,7 +1522,7 @@ static void drawGround(float cx, float cz) {
 #define GLX_MULTISAMPLE 0x809D
 
 enum TexId { TX_FLOOR, TX_WALL, TX_CONCRETE, TX_CRATE, TX_CONTAINER, TX_BARRIER, TX_HAZARD, TX_CEIL, TX_PAINT,
-             TX_GLOW, TX_FLASH, TX_FABRIC, TX_WEB, NUM_TX };
+             TX_SAND, TX_ROCK, TX_ADOBE, TX_SANDBAG, TX_WHITE, TX_GLOW, TX_FLASH, TX_FABRIC, TX_WEB, NUM_TX };
 static GLuint g_tex[NUM_TX];
 static float g_maxAniso = 0.0f;         // filtro anisotropico (chao nitido em angulo raso), se a placa tiver
 
@@ -1683,6 +1813,93 @@ static void genWeb(Img& im) {
         }
 }
 
+// ---- texturas dos outros mapas
+// Chao do deserto: areia batida com ondas de vento, pedrinhas e trechos de terra seca rachada. Cobre 10 x 10 unidades.
+static void genSand(Img& im) {
+    const int N = im.w, C = 14;                             // C x C placas de terra rachada
+    for (int y = 0; y < N; ++y)
+        for (int x = 0; x < N; ++x) {
+            float u = (x + 0.5f) / N, v = (y + 0.5f) / N;
+            float c = 0.80f + 0.20f * (fbm(u, v, 3, 4, 301u) - 0.5f) + 0.10f * (fbm(u, v, 64, 2, 303u) - 0.5f);
+            float loose = smooth01((fbm(u, v, 2, 3, 311u) - 0.42f) / 0.2f);          // 1 = areia solta, 0 = terra dura
+            float wave = std::sin((v * 46.0f + 2.2f * fbm(u, v, 4, 3, 307u)) * 2.0f * PI);
+            c += 0.035f * wave * loose;                                              // ondas de vento na areia solta
+            float gx = u * C, gy = v * C, d1 = 9.0f, d2 = 9.0f;
+            int cx = (int)std::floor(gx), cy = (int)std::floor(gy);
+            for (int j = -1; j <= 1; ++j)
+                for (int i = -1; i <= 1; ++i) {
+                    int ax = cx + i, ay = cy + j, wx = ((ax % C) + C) % C, wy = ((ay % C) + C) % C;
+                    float px = ax + hashf(wx, wy, 313u), py = ay + hashf(wx, wy, 317u);
+                    float d = std::sqrt((gx - px) * (gx - px) + (gy - py) * (gy - py));
+                    if (d < d1) { d2 = d1; d1 = d; } else if (d < d2) d2 = d;
+                }
+            float crack = (1.0f - smooth01((d2 - d1) / 0.07f)) * (1.0f - loose);     // d2 - d1 perto de 0: em cima da rachadura
+            c *= 1.0f - 0.38f * crack;
+            float sp = hashf(x, y, 331u);
+            if (sp > 0.994f) c *= 0.72f; else if (sp < 0.008f) c *= 1.10f;           // pedrinhas e graos claros
+            float red = 0.05f * (fbm(u, v, 6, 3, 337u) - 0.5f);
+            im.set(x, y, c * (1.00f + red), c * 0.84f, c * (0.62f - red));
+        }
+}
+
+// Arenito: camadas horizontais de tons diferentes, levemente onduladas, com fendas verticais. Cobre 8 x 8 unidades.
+static void genRock(Img& im) {
+    const int N = im.w, L = 22;
+    for (int y = 0; y < N; ++y)
+        for (int x = 0; x < N; ++x) {
+            float u = (x + 0.5f) / N, v = (y + 0.5f) / N;
+            float vv = v + 0.05f * (fbm(u, v, 3, 3, 401u) - 0.5f);
+            float lf = vv * L + (float)L;
+            float band = hashf((int)std::floor(lf) % L, 0, 405u);
+            float layer = fbm2(u, vv, 2, 14, 3, 403u);
+            float c = 0.64f + 0.20f * (layer - 0.5f) + 0.16f * (band - 0.5f) + 0.10f * (fbm(u, v, 48, 2, 407u) - 0.5f);
+            if (fracf(lf) < 0.08f) c *= 0.80f;                                       // sombra entre as camadas
+            float cr = fbm2(u, v, 18, 3, 3, 409u);
+            c -= 0.15f * smooth01((cr - 0.62f) / 0.12f);                             // fendas
+            im.set(x, y, c * 1.10f, c * (0.72f + 0.10f * (band - 0.5f)), c * (0.50f + 0.10f * (layer - 0.5f)));
+        }
+}
+
+// Fiadas desencontradas: tijolos de adobe com o reboco de barro caindo, ou sacos de areia empilhados.
+static void genCourses(Img& im, int cols, int rows, bool bags, unsigned seed) {
+    const int N = im.w;
+    for (int y = 0; y < N; ++y)
+        for (int x = 0; x < N; ++x) {
+            float u = (x + 0.5f) / N, v = (y + 0.5f) / N;
+            float fy = v * rows;
+            int ry = (int)fy;
+            float fx = u * cols + ((ry & 1) ? 0.5f : 0.0f);
+            int rx = (int)std::floor(fx) % cols;
+            float du = fracf(fx), dv = fy - ry, tone = hashf(rx, ry, seed), c;
+            if (bags) {                                                             // cheio no meio, afinando nas bordas
+                float ex = std::min(du, 1.0f - du) * 2.0f, ey = std::min(dv, 1.0f - dv) * 2.0f;
+                float round = std::sqrt(clampf(ex * 3.0f, 0.0f, 1.0f)) * std::sqrt(clampf(ey * 2.2f, 0.0f, 1.0f));
+                c = (0.66f + 0.16f * (tone - 0.5f)) * (0.42f + 0.58f * round);
+                c *= 0.93f + 0.07f * (float)(((x / 2) + (y / 2)) & 1);              // trama da estopa
+                im.set(x, y, c, c * 0.88f, c * 0.66f);
+            } else {
+                float e = std::min(std::min(du, 1.0f - du) * (float)N / cols, std::min(dv, 1.0f - dv) * (float)N / rows);
+                c = 0.66f + 0.16f * (tone - 0.5f) + 0.12f * (fbm(u, v, 24, 3, seed + 3u) - 0.5f);
+                if (e < 1.5f) c *= 0.62f; else if (e < 3.0f) c *= 0.86f;            // juntas
+                float pl = smooth01((fbm(u, v, 4, 4, seed + 7u) - 0.54f) / 0.06f);  // onde o reboco ainda esta de pe
+                c += (0.76f + 0.08f * (fbm(u, v, 32, 2, seed + 9u) - 0.5f) - c) * pl;
+                im.set(x, y, c * 1.04f, c * 0.82f, c * 0.60f);
+            }
+        }
+}
+static void genAdobe(Img& im) { genCourses(im, 4, 8, false, 601u); }
+static void genSandbag(Img& im) { genCourses(im, 3, 4, true, 701u); }
+
+// Sala branca: branco quase liso.
+static void genWhite(Img& im) {
+    const int N = im.w;
+    for (int y = 0; y < N; ++y)
+        for (int x = 0; x < N; ++x) {
+            float c = 0.97f + 0.03f * fbm((x + 0.5f) / N, (y + 0.5f) / N, 6, 3, 501u);
+            im.set(x, y, c, c, c);
+        }
+}
+
 static GLuint textureId(int id) {   // 0 tecido, 1 fitas do colete, 2 clarao do tiro, 3 mancha suave
     return g_tex[id == 1 ? TX_WEB : (id == 2 ? TX_FLASH : (id == 3 ? TX_GLOW : TX_FABRIC))];
 }
@@ -1697,6 +1914,8 @@ static void initTextures() {
         { TX_HAZARD, 256, genHazard, true }, { TX_CEIL, 256, genCeil, true }, { TX_PAINT, 128, genPaint, true },
         { TX_GLOW, 128, genGlow, false }, { TX_FLASH, 128, genFlash, false }, { TX_FABRIC, 128, genFabric, true },
         { TX_WEB, 128, genWeb, true },
+        { TX_SAND, 1024, genSand, true }, { TX_ROCK, 512, genRock, true }, { TX_ADOBE, 256, genAdobe, true },
+        { TX_SANDBAG, 256, genSandbag, true }, { TX_WHITE, 128, genWhite, true },
     };
     for (int i = 0; i < NUM_TX; ++i) {
         Img im(specs[i].size, specs[i].size);
@@ -1707,7 +1926,7 @@ static void initTextures() {
 }
 
 // ---------------------------------------------------------------- cenario com luz assada
-// O galpao nao muda, entao a luz e calculada uma unica vez, ao abrir o jogo: cada ponto do piso, das paredes e das
+// O cenario nao muda durante a partida, entao a luz e calculada uma vez por mapa: cada ponto do piso, das paredes e das
 // caixas soma a luz das luminarias do teto que consegue "ver" (as que estao tapadas viram sombra) mais uma luz
 // ambiente que escurece em cantos e junto as bases. O resultado fica guardado nas cores dos vertices.
 static const int   LIGHT_NX = 8, LIGHT_NZ = 3;           // luminarias: 8 colunas x 3 fileiras
@@ -1732,7 +1951,7 @@ static GLuint g_worldList = 0, g_paintList = 0;
 
 // O segmento a -> a + d bate em alguma caixa (a partir da caixa "first")? planes: chao e teto tambem contam.
 static bool segBlocked(const float a[3], const float d[3], int first, bool planes) {
-    if (planes) { float ey = a[1] + d[1]; if (ey < 0.0f || ey > ROOM_H) return true; }
+    if (planes) { float ey = a[1] + d[1]; if (ey < 0.0f || ey > g_ceil) return true; }
     const float x0 = std::min(a[0], a[0] + d[0]), x1 = std::max(a[0], a[0] + d[0]);
     const float z0 = std::min(a[2], a[2] + d[2]), z1 = std::max(a[2], a[2] + d[2]);
     for (int i = first; i < g_numObs; ++i) {
@@ -1757,9 +1976,47 @@ static bool segBlocked(const float a[3], const float d[3], int first, bool plane
     return false;
 }
 
-// Luz que chega num ponto da superficie (p, normal n): direta das luminarias + ambiente com oclusao.
+// Deserto: a luz vem do sol (uma direcao so) e do ceu.
+static const float SUN_DIR[3] = { 0.42f, 0.80f, 0.43f };
+static const float SUN_FAR = 400.0f;
+
+// Fracao das direcoes em volta do ponto (do lado da normal) tapadas por algo a menos de 2,4: cantos e bases ficam escuros.
+static float bakeOcclusion(const float q[3], const float n[3]) {
+    static const float D = 0.5774f;
+    static const float dirs[14][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 },
+        { D, D, D }, { -D, D, D }, { D, -D, D }, { -D, -D, D }, { D, D, -D }, { -D, D, -D }, { D, -D, -D }, { -D, -D, -D } };
+    int used = 0, occ = 0;
+    for (int i = 0; i < 14; ++i) {
+        if (n[0] * dirs[i][0] + n[1] * dirs[i][1] + n[2] * dirs[i][2] < 0.15f) continue;
+        float d[3] = { dirs[i][0] * 2.4f, dirs[i][1] * 2.4f, dirs[i][2] * 2.4f };
+        ++used;
+        if (segBlocked(q, d, 0, true)) ++occ;
+    }
+    return used ? (float)occ / (float)used : 0.0f;
+}
+
+// Luz que chega num ponto da superficie (p, normal n). Galpao: direta das luminarias + ambiente com oclusao. Deserto:
+// sol (com a sombra das pecas) + ceu. Sala branca: quase tudo igual, so um tom por lado e os cantos um pouco mais escuros.
 static void bakeLight(const float p[3], const float n[3], float out[3]) {
     float q[3] = { p[0] + n[0] * 0.03f, p[1] + n[1] * 0.03f, p[2] + n[2] * 0.03f };
+    float occ = bakeOcclusion(q, n);
+    if (g_worldMap == MAP_BRANCO) {
+        float c = n[1] > 0.5f ? 0.98f : (n[1] < -0.5f ? 0.955f : (std::fabs(n[0]) > 0.5f ? 0.955f : 0.935f));
+        out[0] = out[1] = out[2] = c * (1.0f - 0.13f * occ);
+        return;
+    }
+    if (g_worldMap == MAP_DESERTO) {
+        float ndl = n[0] * SUN_DIR[0] + n[1] * SUN_DIR[1] + n[2] * SUN_DIR[2], direct = 0.0f;
+        if (ndl > 0.0f) {
+            float L[3] = { SUN_DIR[0] * SUN_FAR, SUN_DIR[1] * SUN_FAR, SUN_DIR[2] * SUN_FAR };
+            if (!segBlocked(q, L, 0, false)) direct = ndl;
+        }
+        float amb = 0.46f * (1.0f - 0.6f * occ);
+        out[0] = 0.80f * direct + 0.86f * amb;    // sol quente, sombra azulada (a luz do ceu)
+        out[1] = 0.74f * direct + 0.88f * amb;
+        out[2] = 0.62f * direct + 1.00f * amb;
+        return;
+    }
     float direct = 0.0f;
     for (size_t i = 0; i < g_lsamples.size(); ++i) {
         float L[3] = { g_lsamples[i].p[0] - q[0], g_lsamples[i].p[1] - q[1], g_lsamples[i].p[2] - q[2] };
@@ -1773,18 +2030,7 @@ static void bakeLight(const float p[3], const float n[3], float out[3]) {
         direct += ndl * cl / d2 * reach;
     }
     direct *= LIGHT_POWER;
-
-    static const float D = 0.5774f;
-    static const float dirs[14][3] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 },
-        { D, D, D }, { -D, D, D }, { D, -D, D }, { -D, -D, D }, { D, D, -D }, { -D, D, -D }, { D, -D, -D }, { -D, -D, -D } };
-    int used = 0, occ = 0;
-    for (int i = 0; i < 14; ++i) {
-        if (n[0] * dirs[i][0] + n[1] * dirs[i][1] + n[2] * dirs[i][2] < 0.15f) continue;
-        float d[3] = { dirs[i][0] * 2.4f, dirs[i][1] * 2.4f, dirs[i][2] * 2.4f };
-        ++used;
-        if (segBlocked(q, d, 0, true)) ++occ;
-    }
-    float amb = 0.34f * (1.0f - 0.7f * (used ? (float)occ / (float)used : 0.0f));
+    float amb = 0.34f * (1.0f - 0.7f * occ);
     out[0] = 1.00f * direct + 0.80f * amb;        // luz direta quente, ambiente frio
     out[1] = 0.95f * direct + 0.88f * amb;
     out[2] = 0.86f * direct + 1.00f * amb;
@@ -1865,49 +2111,142 @@ static GLuint compileBatches(int from, int to) {
     return list;
 }
 
+// Uma caixa de rocha que so enfeita (nao e obstaculo): beirada da muralha e morros ao longe.
+static void emitRockBox(float x, float z, float hw, float hd, float y0, float h, const float tint[3], float step) {
+    Obstacle b = { x, z, hw, hd, h, 1.0f, 1.0f, 1.0f, OB_ROCK };
+    const float top[3] = { tint[0] * 0.98f, tint[1] * 0.86f, tint[2] * 0.80f };
+    emitSides(TX_ROCK, x, z, hw, hd, y0, h, 1.0f / 8.0f, 1.0f / 8.0f, tint, step);
+    emitTop(TX_SAND, b, 0.1f, 0.1f, top, step);
+}
+
+// Deserto: o que fica fora da arena. Areia ate o horizonte, pedras de alturas variadas em cima da muralha (a beirada
+// fica irregular, como um paredao de verdade) e morros de topo chato ao longe.
+static void buildDesertScenery() {
+    const float X[3] = { 1, 0, 0 }, Y[3] = { 0, 1, 0 }, Z[3] = { 0, 0, 1 };
+    const float R = 640.0f, ex = ROOM_X + 6.0f, ez = ROOM_Z + 6.0f, sand[3] = { 1.0f, 0.99f, 0.97f };
+    {
+        float o1[3] = { -R, 0, -R }, o2[3] = { -R, 0, ez }, o3[3] = { -R, 0, -ez }, o4[3] = { ex, 0, -ez };
+        emitFace(TX_SAND, o1, X, 2 * R, Z, R - ez, Y, 0.0f, 0.1f, 0.0f, 0.1f, sand, 40.0f);
+        emitFace(TX_SAND, o2, X, 2 * R, Z, R - ez, Y, 0.0f, 0.1f, 0.0f, 0.1f, sand, 40.0f);
+        emitFace(TX_SAND, o3, X, R - ex, Z, 2 * ez, Y, 0.0f, 0.1f, 0.0f, 0.1f, sand, 40.0f);
+        emitFace(TX_SAND, o4, X, R - ex, Z, 2 * ez, Y, 0.0f, 0.1f, 0.0f, 0.1f, sand, 40.0f);
+    }
+    unsigned rs = 4242u;                                    // sorteio proprio: o cenario e sempre o mesmo
+    auto rnd = [&rs]() { rs = rs * 1664525u + 1013904223u; return (float)((rs >> 8) & 0xFFFF) / 65536.0f; };
+    for (int side = 0; side < 4; ++side) {                  // pedras em cima da muralha, pelos quatro lados
+        float len = side < 2 ? ROOM_X + 5.0f : ROOM_Z + 1.0f, a = -len;
+        while (a < len) {
+            float hw = 2.0f + rnd() * 3.2f, hd = 1.5f + rnd() * 1.1f, h = 8.2f + rnd() * 5.8f, c = 0.86f + rnd() * 0.18f;
+            float gap = rnd() < 0.3f ? rnd() * 5.0f : 0.0f;
+            float along = std::min(a + hw, len - 0.5f), out = 3.4f + (rnd() - 0.5f) * 0.6f;
+            const float tint[3] = { c, c * (0.95f + rnd() * 0.05f), c * (0.92f + rnd() * 0.08f) };
+            if (side == 0)      emitRockBox(along, -ROOM_Z - out, hw, hd, DESERT_WALL_H - 0.5f, h, tint, 1.6f);
+            else if (side == 1) emitRockBox(along,  ROOM_Z + out, hw, hd, DESERT_WALL_H - 0.5f, h, tint, 1.6f);
+            else if (side == 2) emitRockBox(-ROOM_X - out, along, hd, hw, DESERT_WALL_H - 0.5f, h, tint, 1.6f);
+            else                emitRockBox( ROOM_X + out, along, hd, hw, DESERT_WALL_H - 0.5f, h, tint, 1.6f);
+            a += 2.0f * hw - 0.4f + gap;
+        }
+    }
+    static const float mesa[][5] = {                        // x, z, meia largura, meia profundidade, altura
+        { -190.0f, -160.0f, 45.0f, 30.0f, 42.0f }, {  -40.0f, -240.0f, 60.0f, 25.0f, 30.0f }, { 130.0f, -215.0f, 35.0f, 28.0f, 55.0f },
+        {  255.0f,  -90.0f, 30.0f, 50.0f, 38.0f }, {  235.0f,  115.0f, 55.0f, 30.0f, 48.0f }, {  60.0f,  245.0f, 40.0f, 25.0f, 34.0f },
+        { -145.0f,  225.0f, 50.0f, 30.0f, 60.0f }, { -265.0f,   40.0f, 30.0f, 55.0f, 36.0f }, { -340.0f, -210.0f, 70.0f, 40.0f, 70.0f },
+        {  350.0f,  270.0f, 60.0f, 60.0f, 80.0f }, {   10.0f, -390.0f, 90.0f, 30.0f, 50.0f }, { -60.0f,  400.0f, 80.0f, 35.0f, 65.0f } };
+    for (size_t i = 0; i < sizeof(mesa) / sizeof(mesa[0]); ++i) {
+        const float* m = mesa[i];
+        float c = 0.90f + rnd() * 0.14f;
+        const float tint[3] = { c, c * 0.97f, c * 0.95f };
+        emitRockBox(m[0], m[1], m[2], m[3], 0.0f, m[4], tint, 14.0f);                                   // a base
+        emitRockBox(m[0] + (rnd() - 0.5f) * m[2] * 0.4f, m[1] + (rnd() - 0.5f) * m[3] * 0.4f,           // um degrau em cima
+                    m[2] * (0.45f + rnd() * 0.2f), m[3] * (0.45f + rnd() * 0.2f), m[4], m[4] * (1.3f + rnd() * 0.3f), tint, 14.0f);
+    }
+}
+
+// Calcula a luz e guarda o cenario do mapa g_worldMap (as caixas ja estao em g_obs).
 static void buildWorld() {
+    const int map = g_worldMap;
+    if (g_worldList) glDeleteLists(g_worldList, 1);
+    if (g_paintList) glDeleteLists(g_paintList, 1);
     g_lsamples.clear();
-    for (int iz = 0; iz < LIGHT_NZ; ++iz)
-        for (int ix = 0; ix < LIGHT_NX; ++ix)
-            for (int k = -2; k <= 2; ++k) {
-                LSample s = { { lightX(ix) + k * 2.0f, ROOM_H - 0.1f, lightZ(iz) } };
-                g_lsamples.push_back(s);
-            }
+    if (map == MAP_GALPAO)
+        for (int iz = 0; iz < LIGHT_NZ; ++iz)
+            for (int ix = 0; ix < LIGHT_NX; ++ix)
+                for (int k = -2; k <= 2; ++k) {
+                    LSample s = { { lightX(ix) + k * 2.0f, ROOM_H - 0.1f, lightZ(iz) } };
+                    g_lsamples.push_back(s);
+                }
 
     const float W[3] = { 1, 1, 1 }, X[3] = { 1, 0, 0 }, Y[3] = { 0, 1, 0 }, Z[3] = { 0, 0, 1 }, NX[3] = { -1, 0, 0 }, NZ[3] = { 0, 0, -1 };
     const float DOWN[3] = { 0, -1, 0 };
 
     {   // piso
         float o[3] = { -ROOM_X, 0, -ROOM_Z };
-        emitFace(TX_FLOOR, o, X, 2 * ROOM_X, Z, 2 * ROOM_Z, Y, 0.0f, 0.1f, 0.0f, 0.1f, W, 0.75f);
+        int tex = map == MAP_DESERTO ? TX_SAND : (map == MAP_BRANCO ? TX_WHITE : TX_FLOOR);
+        emitFace(tex, o, X, 2 * ROOM_X, Z, 2 * ROOM_Z, Y, 0.0f, 0.1f, 0.0f, 0.1f, W, 0.75f);
     }
-    {   // paredes: barra pintada embaixo, filete amarelo e concreto aparente ate o teto
+    if (map == MAP_DESERTO) {
+        // muralha de rocha (os lados e o topo de cada trecho) e o que se ve por cima dela
+        const float top[3] = { 0.98f, 0.86f, 0.80f };
+        for (int i = 0; i < NUM_WALLS; ++i) {
+            const Obstacle& b = g_obs[i];
+            emitSides(TX_ROCK, b.x, b.z, b.hw, b.hd, 0.0f, b.h, 1.0f / 8.0f, 1.0f / 8.0f, W, 1.0f);
+            emitTop(TX_SAND, b, 0.1f, 0.1f, top, 1.5f);
+        }
+        buildDesertScenery();
+    } else {
+        // paredes. Galpao: barra pintada embaixo, filete amarelo e concreto aparente ate o teto. Sala branca: lisas.
         const float band[3] = { 0.42f, 0.50f, 0.62f }, line[3] = { 1.25f, 0.95f, 0.22f };
         const float y[4] = { 0.0f, 1.3f, 1.42f, ROOM_H };
         const float* tint[3] = { band, line, W };
-        for (int s = 0; s < 3; ++s) {
-            float o1[3] = { -ROOM_X, y[s], -ROOM_Z }, o2[3] = { ROOM_X, y[s], ROOM_Z }, o3[3] = { -ROOM_X, y[s], ROOM_Z }, o4[3] = { ROOM_X, y[s], -ROOM_Z };
-            float h = y[s + 1] - y[s], v0 = y[s] / 8.0f;
-            emitFace(TX_WALL, o1, X, 2 * ROOM_X, Y, h, Z, 0.0f, 0.125f, v0, 0.125f, tint[s], 1.0f);
-            emitFace(TX_WALL, o2, NX, 2 * ROOM_X, Y, h, NZ, 0.0f, 0.125f, v0, 0.125f, tint[s], 1.0f);
-            emitFace(TX_WALL, o3, NZ, 2 * ROOM_Z, Y, h, X, 0.0f, 0.125f, v0, 0.125f, tint[s], 1.0f);
-            emitFace(TX_WALL, o4, Z, 2 * ROOM_Z, Y, h, NX, 0.0f, 0.125f, v0, 0.125f, tint[s], 1.0f);
+        const bool white = map == MAP_BRANCO;
+        for (int s = white ? 2 : 0; s < 3; ++s) {
+            float y0 = white ? 0.0f : y[s];
+            float o1[3] = { -ROOM_X, y0, -ROOM_Z }, o2[3] = { ROOM_X, y0, ROOM_Z }, o3[3] = { -ROOM_X, y0, ROOM_Z }, o4[3] = { ROOM_X, y0, -ROOM_Z };
+            float h = y[s + 1] - y0, v0 = y0 / 8.0f;
+            int tex = white ? TX_WHITE : TX_WALL;
+            emitFace(tex, o1, X, 2 * ROOM_X, Y, h, Z, 0.0f, 0.125f, v0, 0.125f, tint[s], 1.0f);
+            emitFace(tex, o2, NX, 2 * ROOM_X, Y, h, NZ, 0.0f, 0.125f, v0, 0.125f, tint[s], 1.0f);
+            emitFace(tex, o3, NZ, 2 * ROOM_Z, Y, h, X, 0.0f, 0.125f, v0, 0.125f, tint[s], 1.0f);
+            emitFace(tex, o4, Z, 2 * ROOM_Z, Y, h, NX, 0.0f, 0.125f, v0, 0.125f, tint[s], 1.0f);
         }
-    }
-    {   // teto e vigas
-        float o[3] = { -ROOM_X, ROOM_H, -ROOM_Z };
-        emitFace(TX_CEIL, o, X, 2 * ROOM_X, Z, 2 * ROOM_Z, DOWN, 0.0f, 1.0f / 6.0f, 0.0f, 1.0f / 6.0f, W, 2.5f, true);
-        const float steel[3] = { 0.62f, 0.64f, 0.70f };
-        for (int g = 0; g < LIGHT_NX - 1; ++g) {            // uma viga entre cada par de colunas de luminarias
-            float gx = lightX(g) + LIGHT_DX * 0.5f, y0 = ROOM_H - 0.9f;
-            float a[3] = { gx - 0.3f, y0, -ROOM_Z }, b[3] = { gx + 0.3f, y0, -ROOM_Z };
-            emitFace(TX_CEIL, a, Z, 2 * ROOM_Z, Y, 0.9f, NX, 0.0f, 0.25f, 0.0f, 0.25f, steel, 2.5f, true);
-            emitFace(TX_CEIL, b, Z, 2 * ROOM_Z, Y, 0.9f, X, 0.0f, 0.25f, 0.0f, 0.25f, steel, 2.5f, true);
-            emitFace(TX_CEIL, a, Z, 2 * ROOM_Z, X, 0.6f, DOWN, 0.0f, 0.25f, 0.0f, 0.25f, steel, 2.5f, true);
+        float o[3] = { -ROOM_X, ROOM_H, -ROOM_Z };          // teto
+        if (white) emitFace(TX_WHITE, o, X, 2 * ROOM_X, Z, 2 * ROOM_Z, DOWN, 0.0f, 0.1f, 0.0f, 0.1f, W, 2.5f);
+        else {
+            emitFace(TX_CEIL, o, X, 2 * ROOM_X, Z, 2 * ROOM_Z, DOWN, 0.0f, 1.0f / 6.0f, 0.0f, 1.0f / 6.0f, W, 2.5f, true);
+            const float steel[3] = { 0.62f, 0.64f, 0.70f };
+            for (int g = 0; g < LIGHT_NX - 1; ++g) {        // uma viga entre cada par de colunas de luminarias
+                float gx = lightX(g) + LIGHT_DX * 0.5f, y0 = ROOM_H - 0.9f;
+                float a[3] = { gx - 0.3f, y0, -ROOM_Z }, b[3] = { gx + 0.3f, y0, -ROOM_Z };
+                emitFace(TX_CEIL, a, Z, 2 * ROOM_Z, Y, 0.9f, NX, 0.0f, 0.25f, 0.0f, 0.25f, steel, 2.5f, true);
+                emitFace(TX_CEIL, b, Z, 2 * ROOM_Z, Y, 0.9f, X, 0.0f, 0.25f, 0.0f, 0.25f, steel, 2.5f, true);
+                emitFace(TX_CEIL, a, Z, 2 * ROOM_Z, X, 0.6f, DOWN, 0.0f, 0.25f, 0.0f, 0.25f, steel, 2.5f, true);
+            }
         }
     }
     for (int i = NUM_WALLS; i < g_numObs; ++i) {
         const Obstacle& b = g_obs[i];
+        if (map == MAP_BRANCO) {
+            emitSides(TX_WHITE, b.x, b.z, b.hw, b.hd, 0.0f, b.h, 0.25f, 0.25f, W, 0.8f);
+            if (b.h < ROOM_H - 0.1f) emitTop(TX_WHITE, b, 0.25f, 0.25f, W, 0.8f);
+            continue;
+        }
+        const float tone[3] = { b.r, b.g, b.b };
+        if (map == MAP_DESERTO && (b.kind == OB_ROCK || b.kind == OB_PILLAR)) {
+            const float top[3] = { b.r * 0.98f, b.g * 0.86f, b.b * 0.80f };
+            emitSides(TX_ROCK, b.x, b.z, b.hw, b.hd, 0.0f, b.h, 1.0f / 8.0f, 1.0f / 8.0f, tone, 0.7f);
+            emitTop(TX_SAND, b, 0.1f, 0.1f, top, 0.7f);
+            continue;
+        }
+        if (map == MAP_DESERTO && b.kind == OB_COVER) {
+            emitSides(TX_ADOBE, b.x, b.z, b.hw, b.hd, 0.0f, b.h, 0.25f, 0.25f, tone, 0.8f);
+            emitTop(TX_ADOBE, b, 0.25f, 0.25f, tone, 0.8f);
+            continue;
+        }
+        if (map == MAP_DESERTO && b.kind == OB_BARRIER) {
+            emitSides(TX_SANDBAG, b.x, b.z, b.hw, b.hd, 0.0f, b.h, 1.0f / 3.0f, 1.0f / b.h, W, 0.5f);
+            emitTop(TX_SANDBAG, b, 1.0f / 3.0f, 1.0f / (2.0f * std::min(b.hw, b.hd)), W, 0.5f);
+            continue;
+        }
         switch (b.kind) {
         case OB_PILLAR: {
             const float t[3] = { 0.92f, 0.92f, 0.96f };
@@ -1940,7 +2279,7 @@ static void buildWorld() {
         }
         }
     }
-    for (int ring = 0; ring < 2; ++ring) {   // faixas amarelas no piso: dois retangulos de circulacao, um dentro do outro
+    for (int ring = 0; ring < (map == MAP_GALPAO ? 2 : 0); ++ring) {   // galpao: faixas amarelas no piso, dois retangulos
         const float lx = ring ? 61.0f : 31.0f, lz = ring ? 45.0f : 25.0f, w = 0.3f;
         const float seg[4][4] = { { -lx, -lz, 2 * lx, 0 }, { -lx, lz - w, 2 * lx, 0 }, { -lx, -lz, 0, 2 * lz }, { lx - w, -lz, 0, 2 * lz } };
         for (int s = 0; s < 4; ++s) {
@@ -1953,9 +2292,56 @@ static void buildWorld() {
     g_worldList = compileBatches(0, NUM_TX - 1);
 }
 
-// O galpao inteiro: cenario assado, faixas do piso e os paineis das luminarias.
+// Ceu do deserto: uma cupula em volta da camera (azul no alto, clara e amarelada no horizonte) e o sol.
+static void drawSky() {
+    float mv[16], e[3];
+    glGetFloatv(GL_MODELVIEW_MATRIX, mv);
+    for (int i = 0; i < 3; ++i) e[i] = -(mv[i * 4] * mv[12] + mv[i * 4 + 1] * mv[13] + mv[i * 4 + 2] * mv[14]);
+    glPushAttrib(GL_ENABLE_BIT | GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT);
+    glDisable(GL_FOG);
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glDisable(GL_TEXTURE_2D);
+    static const float elev[5] = { -0.40f, 0.0f, 0.17f, 0.62f, 1.5708f };
+    static const float col[5][3] = { { 0.90f, 0.83f, 0.71f }, { 0.90f, 0.83f, 0.71f }, { 0.70f, 0.80f, 0.90f },
+                                     { 0.36f, 0.57f, 0.88f }, { 0.20f, 0.42f, 0.80f } };
+    const int SEG = 24;
+    const float R = 300.0f;
+    for (int b = 0; b < 4; ++b) {
+        glBegin(GL_QUAD_STRIP);
+        for (int s = 0; s <= SEG; ++s) {
+            float a = 2.0f * PI * (float)(s % SEG) / (float)SEG, ca = std::cos(a), sa = std::sin(a);
+            for (int k = 1; k >= 0; --k) {
+                float el = elev[b + k], ce = std::cos(el);
+                glColor3fv(col[b + k]);
+                glVertex3f(e[0] + R * ce * ca, e[1] + R * std::sin(el), e[2] + R * ce * sa);
+            }
+        }
+        glEnd();
+    }
+    const float c[3] = { e[0] + SUN_DIR[0] * 280.0f, e[1] + SUN_DIR[1] * 280.0f, e[2] + SUN_DIR[2] * 280.0f };
+    const float r[3] = { mv[0], mv[4], mv[8] }, u[3] = { mv[1], mv[5], mv[9] };
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, g_tex[TX_GLOW]);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    glBegin(GL_QUADS);
+    for (int pass = 0; pass < 3; ++pass) {                  // halo largo e o disco no meio
+        float s = pass == 0 ? 85.0f : 15.0f;
+        glColor4f(1.0f, pass == 0 ? 0.92f : 0.98f, pass == 0 ? 0.72f : 0.90f, pass == 0 ? 0.50f : 1.0f);
+        glTexCoord2f(0, 0); glVertex3f(c[0] - (r[0] + u[0]) * s, c[1] - (r[1] + u[1]) * s, c[2] - (r[2] + u[2]) * s);
+        glTexCoord2f(1, 0); glVertex3f(c[0] + (r[0] - u[0]) * s, c[1] + (r[1] - u[1]) * s, c[2] + (r[2] - u[2]) * s);
+        glTexCoord2f(1, 1); glVertex3f(c[0] + (r[0] + u[0]) * s, c[1] + (r[1] + u[1]) * s, c[2] + (r[2] + u[2]) * s);
+        glTexCoord2f(0, 1); glVertex3f(c[0] - (r[0] - u[0]) * s, c[1] - (r[1] - u[1]) * s, c[2] - (r[2] - u[2]) * s);
+    }
+    glEnd();
+    glPopAttrib();
+}
+
+// O cenario inteiro: (ceu,) pecas com a luz ja calculada, faixas do piso e os paineis das luminarias do galpao.
 static void drawWorld() {
     glDisable(GL_LIGHTING);
+    if (g_worldMap == MAP_DESERTO) drawSky();
     glEnable(GL_TEXTURE_2D);
     glCallList(g_worldList);
 
@@ -1967,23 +2353,26 @@ static void drawWorld() {
     glDisable(GL_BLEND);
     glDisable(GL_TEXTURE_2D);
 
-    glBegin(GL_QUADS);
-    for (int iz = 0; iz < LIGHT_NZ; ++iz)
-        for (int ix = 0; ix < LIGHT_NX; ++ix) {
-            float cx = lightX(ix), cz = lightZ(iz), y = ROOM_H - 0.06f;
-            glColor3f(0.10f, 0.10f, 0.12f);                 // caixa da luminaria
-            glVertex3f(cx - LIGHT_HX - 0.25f, y + 0.02f, cz - LIGHT_HZ - 0.25f); glVertex3f(cx + LIGHT_HX + 0.25f, y + 0.02f, cz - LIGHT_HZ - 0.25f);
-            glVertex3f(cx + LIGHT_HX + 0.25f, y + 0.02f, cz + LIGHT_HZ + 0.25f); glVertex3f(cx - LIGHT_HX - 0.25f, y + 0.02f, cz + LIGHT_HZ + 0.25f);
-            glColor3f(1.0f, 0.97f, 0.86f);                  // painel aceso
-            glVertex3f(cx - LIGHT_HX, y, cz - LIGHT_HZ); glVertex3f(cx + LIGHT_HX, y, cz - LIGHT_HZ);
-            glVertex3f(cx + LIGHT_HX, y, cz + LIGHT_HZ); glVertex3f(cx - LIGHT_HX, y, cz + LIGHT_HZ);
-        }
-    glEnd();
+    if (g_worldMap == MAP_GALPAO) {
+        glBegin(GL_QUADS);
+        for (int iz = 0; iz < LIGHT_NZ; ++iz)
+            for (int ix = 0; ix < LIGHT_NX; ++ix) {
+                float cx = lightX(ix), cz = lightZ(iz), y = ROOM_H - 0.06f;
+                glColor3f(0.10f, 0.10f, 0.12f);                 // caixa da luminaria
+                glVertex3f(cx - LIGHT_HX - 0.25f, y + 0.02f, cz - LIGHT_HZ - 0.25f); glVertex3f(cx + LIGHT_HX + 0.25f, y + 0.02f, cz - LIGHT_HZ - 0.25f);
+                glVertex3f(cx + LIGHT_HX + 0.25f, y + 0.02f, cz + LIGHT_HZ + 0.25f); glVertex3f(cx - LIGHT_HX - 0.25f, y + 0.02f, cz + LIGHT_HZ + 0.25f);
+                glColor3f(1.0f, 0.97f, 0.86f);                  // painel aceso
+                glVertex3f(cx - LIGHT_HX, y, cz - LIGHT_HZ); glVertex3f(cx + LIGHT_HX, y, cz - LIGHT_HZ);
+                glVertex3f(cx + LIGHT_HX, y, cz + LIGHT_HZ); glVertex3f(cx - LIGHT_HX, y, cz + LIGHT_HZ);
+            }
+        glEnd();
+    }
     glEnable(GL_LIGHTING);
 }
 
-// Halo em volta das luminarias (depois de tudo que e solido, somando luz).
+// Halo em volta das luminarias do galpao (depois de tudo que e solido, somando luz).
 static void drawLightGlow() {
+    if (g_worldMap != MAP_GALPAO) return;
     glDisable(GL_LIGHTING);
     glEnable(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, g_tex[TX_GLOW]);
@@ -2013,6 +2402,17 @@ struct Probe { float dir[3]; float direct; };
 
 static void lightProbe(float x, float y, float z, Probe& pr) {
     float q[3] = { x, y + 1.7f, z }, sum[3] = { 0, 0, 0 };
+    if (g_worldMap == MAP_DESERTO) {                        // sol: ou bate, ou esta na sombra de alguma peca
+        float L[3] = { SUN_DIR[0] * SUN_FAR, SUN_DIR[1] * SUN_FAR, SUN_DIR[2] * SUN_FAR };
+        for (int k = 0; k < 3; ++k) pr.dir[k] = SUN_DIR[k];
+        pr.direct = segBlocked(q, L, 0, false) ? 0.12f : 1.0f;
+        return;
+    }
+    if (g_worldMap == MAP_BRANCO) {                         // luz igual em todo lugar, vinda de cima
+        pr.dir[0] = 0.20f; pr.dir[1] = 0.95f; pr.dir[2] = 0.24f;
+        pr.direct = 0.50f;
+        return;
+    }
     for (size_t i = 0; i < g_lsamples.size(); ++i) {
         float L[3] = { g_lsamples[i].p[0] - q[0], g_lsamples[i].p[1] - q[1], g_lsamples[i].p[2] - q[2] };
         float reach = lightReach(L[0], L[2]);
@@ -2030,9 +2430,13 @@ static void lightProbe(float x, float y, float z, Probe& pr) {
 
 // Chamar com a matriz da camera ativa (antes de mover para o personagem): a direcao da luz e dada no mundo.
 static void applyProbe(const Probe& pr) {
+    static const float AMB[NUM_MAPS][3] = { { 0.30f, 0.33f, 0.38f }, { 0.40f, 0.40f, 0.43f }, { 0.50f, 0.50f, 0.51f } };
+    static const float DIF[NUM_MAPS][3] = { { 1.00f, 0.95f, 0.86f }, { 1.00f, 0.94f, 0.80f }, { 1.00f, 1.00f, 1.00f } };
+    const int map = g_worldMap < 0 ? 0 : g_worldMap;
     float d = 0.25f + pr.direct;
     const float pos[4] = { pr.dir[0], pr.dir[1], pr.dir[2], 0.0f };
-    const float dif[4] = { 1.00f * d, 0.95f * d, 0.86f * d, 1.0f }, amb[4] = { 0.30f, 0.33f, 0.38f, 1.0f };
+    const float dif[4] = { DIF[map][0] * d, DIF[map][1] * d, DIF[map][2] * d, 1.0f };
+    const float amb[4] = { AMB[map][0], AMB[map][1], AMB[map][2], 1.0f };
     glLightfv(GL_LIGHT0, GL_POSITION, pos);
     glLightfv(GL_LIGHT0, GL_DIFFUSE, dif);
     glLightfv(GL_LIGHT0, GL_AMBIENT, amb);
@@ -2145,8 +2549,8 @@ static bool segmentHit(const float a[3], const float b[3], float hit[3], float n
     if (a[1] > 0.0f && b[1] <= 0.0f) {
         best = a[1] / (a[1] - b[1]); found = true; n[0] = 0; n[1] = 1; n[2] = 0;
     }
-    if (a[1] < ROOM_H && b[1] >= ROOM_H) {
-        float t = (ROOM_H - a[1]) / (b[1] - a[1]);
+    if (a[1] < g_ceil && b[1] >= g_ceil) {
+        float t = (g_ceil - a[1]) / (b[1] - a[1]);
         if (t < best) { best = t; found = true; n[0] = 0; n[1] = -1; n[2] = 0; }
     }
     for (int i = 0; i < g_numObs; ++i) {
@@ -2406,7 +2810,7 @@ static void drawPlayer(const Player& p) {
 
 static void setupView(float ex, float ey, float ez, float tx, float ty, float tz) {
     float aspect = (float)g_width / (float)(g_height > 0 ? g_height : 1);
-    float nearP = 0.1f, farP = 300.0f;
+    float nearP = 0.1f, farP = 700.0f;                  // longe o bastante para os morros do deserto
     float top = nearP * std::tan(60.0f * PI / 180.0f * 0.5f);
     float right = top * aspect;
 
@@ -2475,7 +2879,7 @@ static void updateCamera(const Player& p, float dt) {
     camDir(g_camPitch, e);
     float free0 = clampf(aimRayHit(t0, e, 0.0f, CAM_DIST + CAM_MARGIN) - CAM_MARGIN, CAM_MIN_DIST, CAM_DIST);
     float liftWant = (1.0f - free0 / CAM_DIST) * (1.0f - free0 / CAM_DIST) * CAM_MAX_LIFT;
-    liftWant = std::min(liftWant, ROOM_H - 1.0f - t0[1]);
+    liftWant = std::min(liftWant, g_ceil - 1.0f - t0[1]);
     g_camLift += (liftWant - g_camLift) * (1.0f - std::exp(-8.0f * dt));
 
     float t[3];
@@ -2639,6 +3043,11 @@ static void drawText(HDC, const Font& f, const char* s, float cx, float y, float
     glColor4f(0.0f, 0.0f, 0.0f, 0.55f * a);
     emitGlyphs(f, s, o, X, Y, 2.0f, -2.0f);
     emitGlyphs(f, s, o, X, Y, 1.0f, -1.0f);
+    if (g_worldMap == MAP_BRANCO) {                     // fundo branco: contorno escuro em volta das letras
+        glColor4f(0.0f, 0.0f, 0.0f, 0.75f * a);
+        static const float off[8][2] = { { -1.5f, 0 }, { 1.5f, 0 }, { 0, -1.5f }, { 0, 1.5f }, { -1, -1 }, { 1, -1 }, { -1, 1 }, { 1, 1 } };
+        for (int k = 0; k < 8; ++k) emitGlyphs(f, s, o, X, Y, off[k][0], off[k][1]);
+    }
     glColor4f(r, g, b, a);
     emitGlyphs(f, s, o, X, Y, 0.0f, 0.0f);
     glEnd();
@@ -2653,6 +3062,8 @@ static void drawText3D(HDC, const Font& f, const char* s, float x, float y, floa
     glGetFloatv(GL_MODELVIEW_MATRIX, mv);
     float depth = -(mv[2] * x + mv[6] * y + mv[10] * z + mv[14]);
     if (depth < 0.3f || g_height <= 0) return;
+    float fade = 1.0f;                                  // sala branca: o nome some na nevoa junto com o personagem
+    if (g_worldMap == MAP_BRANCO) { fade = clampf((75.0f - depth) / 35.0f, 0.0f, 1.0f); if (fade <= 0.0f) return; }
     float px = 2.0f * depth * std::tan(30.0f * PI / 180.0f) / (float)g_height;      // tamanho de um pixel nessa distancia
     const float R[3] = { mv[0] * px, mv[4] * px, mv[8] * px }, U[3] = { mv[1] * px, mv[5] * px, mv[9] * px };
     const float o[3] = { x, y, z };
@@ -2667,10 +3078,16 @@ static void drawText3D(HDC, const Font& f, const char* s, float x, float y, floa
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
     glBegin(GL_QUADS);
-    glColor4f(0.0f, 0.0f, 0.0f, 0.6f);
+    glColor4f(0.0f, 0.0f, 0.0f, 0.6f * fade);
     emitGlyphs(f, s, o, R, U, half + 2.0f, -2.0f);
     emitGlyphs(f, s, o, R, U, half + 1.0f, -1.0f);
-    glColor4f(r, g, b, 1.0f);
+    if (g_worldMap == MAP_BRANCO) {
+        emitGlyphs(f, s, o, R, U, half - 1.5f, 0.0f);
+        emitGlyphs(f, s, o, R, U, half + 1.5f, 0.0f);
+        emitGlyphs(f, s, o, R, U, half, 1.5f);
+        emitGlyphs(f, s, o, R, U, half, -1.5f);
+    }
+    glColor4f(r, g, b, fade);
     emitGlyphs(f, s, o, R, U, half, 0.0f);
     glEnd();
     glPopAttrib();
@@ -2720,6 +3137,8 @@ static void resolveCollisions(Player& p) {
             else             p.z = o.z + o.hd + PLAYER_RADIUS;
         }
     }
+    p.x = clampf(p.x, -ROOM_X + PLAYER_RADIUS, ROOM_X - PLAYER_RADIUS);     // ninguem sai da arena, nem por cima da muralha
+    p.z = clampf(p.z, -ROOM_Z + PLAYER_RADIUS, ROOM_Z - PLAYER_RADIUS);
 }
 
 static float angleDiff(float target, float cur) {      // diferenca entre angulos, entre -PI e PI
@@ -2867,7 +3286,7 @@ static float aimRayHit(const float o[3], const float d[3], float tMin, float tMa
         if (t > tMin && t < best) best = t;
     }
     if (d[1] > 1e-4f) {                                 // teto
-        float t = (ROOM_H - o[1]) / d[1];
+        float t = (g_ceil - o[1]) / d[1];
         if (t > tMin && t < best) best = t;
     }
     for (int i = 0; i < g_numObs; ++i) {
@@ -2971,7 +3390,7 @@ static void fireProjectile(const Player& p) {
 }
 
 static bool projectileInside(const float p[3]) {
-    if (p[1] <= 0.0f || p[1] >= ROOM_H) return true;
+    if (p[1] <= 0.0f || p[1] >= g_ceil) return true;
     for (int i = 0; i < g_numObs; ++i) {
         const Obstacle& o = g_obs[i];
         if (std::fabs(p[0] - o.x) <= o.hw && std::fabs(p[2] - o.z) <= o.hd && p[1] <= o.h) return true;
@@ -3038,7 +3457,7 @@ static void updateProjectiles(const Player& pl, float dt) {
 // perdem); o anfitriao repassa cada um a quem precisa. Quem atira decide se acertou e avisa so o atingido; o atingido
 // tira a propria vida e, ao ser eliminado, avisa todos quem o eliminou (e quem eliminou soma o abate).
 static const unsigned short NET_PORT = 27015;
-static const unsigned char NET_VERSION = 4;
+static const unsigned char NET_VERSION = 5;
 static const float NET_SEND_INTERVAL = 1.0f / 30.0f;
 static const float NET_TIMEOUT = 6.0f;
 enum NetMsg { NM_FIND = 1, NM_HERE, NM_HELLO, NM_WELCOME, NM_STATE, NM_BYE, NM_WORLD, NM_FULL };
@@ -3047,7 +3466,7 @@ static const int NET_MAX_EV = 16;
 #pragma pack(push, 1)
 struct NetHeader { char magic[4]; unsigned char type, version; };
 struct NetHello { NetHeader h; char name[MAX_NAME + 1]; unsigned char model, hair, color, beard, outfit; };
-struct NetHere { NetHeader h; char name[MAX_NAME + 1]; unsigned char players, maxPlayers, mode, phase; };
+struct NetHere { NetHeader h; char name[MAX_NAME + 1]; unsigned char players, maxPlayers, mode, phase, map; };
 struct NetWelcome { NetHeader h; unsigned char id, team, mode, phase, match; };
 struct NetEvent { unsigned seq; unsigned char type, src, dst; float f[6]; };   // src: quem fez; dst: o alvo (acerto/abate)
 struct NetBody {                        // o que cada jogador conta de si mesmo
@@ -3060,7 +3479,7 @@ struct NetState { NetHeader h; NetBody b; unsigned ack; unsigned char nEv; NetEv
 struct NetSlot { unsigned char used, model, hair, color, beard; char name[MAX_NAME + 1]; NetBody b; };
 struct NetWorld {                       // anfitriao -> convidado
     NetHeader h;
-    unsigned char mode, phase, match, winner, limit;
+    unsigned char mode, phase, match, winner, limit, map;
     unsigned ack;                       // ultimo evento deste convidado que o anfitriao ja aplicou
     NetSlot pl[MAX_PLAYERS];            // todos os jogadores da sala, pelo numero (o 0 e o anfitriao)
     unsigned char nEv;
@@ -3070,7 +3489,7 @@ struct NetWorld {                       // anfitriao -> convidado
 static const int NET_STATE_BASE = (int)offsetof(NetState, ev);
 static const int NET_WORLD_BASE = (int)offsetof(NetWorld, ev);
 
-struct FoundHost { sockaddr_in addr; char name[MAX_NAME + 1]; int players, mode, phase; float age; };
+struct FoundHost { sockaddr_in addr; char name[MAX_NAME + 1]; int players, mode, phase, map; float age; };
 struct NetLink {                        // conversa com o outro lado: meus eventos ainda nao confirmados e o ultimo dele
     bool used = false;
     sockaddr_in addr;
@@ -3378,6 +3797,7 @@ static void hostSendWorld(int i) {
     w.match = (unsigned char)g_matchId;
     w.winner = g_winner < 0 ? 255 : (unsigned char)g_winner;
     w.limit = (unsigned char)killLimit();
+    w.map = (unsigned char)g_map;
     NetLink& l = g_link[i];
     w.ack = l.lastEvIn;
     NetSlot& me = w.pl[0];
@@ -3466,6 +3886,7 @@ static void clientApplyWorld(const NetWorld& w, int nEv) {
     g_matchId = w.match;
     g_winner = w.winner == 255 ? -1 : w.winner;
     g_killLimit = w.limit;
+    g_map = w.map < NUM_MAPS ? w.map : MAP_GALPAO;      // o mapa e o do anfitriao (ensureWorld monta)
     for (int k = 0; k < MAX_PLAYERS; ++k) {
         if (k == g_myId) continue;
         const NetSlot& sl = w.pl[k];
@@ -3523,6 +3944,7 @@ static void netPoll(float dt) {
                 m.maxPlayers = (unsigned char)MAX_PLAYERS;
                 m.mode = (unsigned char)g_mode;
                 m.phase = (unsigned char)g_phase;
+                m.map = (unsigned char)g_map;
                 netSendTo(from, &m, sizeof(m));
             }
             break;
@@ -3537,6 +3959,7 @@ static void netPoll(float dt) {
                 g_found[i].players = m->players;
                 g_found[i].mode = m->mode & 1;
                 g_found[i].phase = m->phase;
+                g_found[i].map = m->map < NUM_MAPS ? m->map : 0;
                 g_found[i].age = 0.0f;
             }
             break;
@@ -3935,6 +4358,7 @@ static void botUpdate(float dt) {
     // qualquer lado. Fora disso o bot nao sabe onde o jogador esta: e isso que faz os esconderijos funcionarem.
     if (bt.alertT > 0.0f) bt.alertT -= dt;
     bool clear = lineOfSight(b.x, b.y + 2.4f, b.z, pl.x, pl.y + 2.0f, pl.z);
+    if (g_worldMap == MAP_BRANCO && dist > 55.0f) clear = false;        // a nevoa tambem tapa a visao do bot
     bool seen = clear && (std::fabs(angleDiff(std::atan2(dxp, dzp), b.face)) < 1.9f || dist < 7.0f || bt.alertT > 0.0f);
     if (seen) { bt.lastX = pl.x; bt.lastZ = pl.z; }
     float wantPitch = seen ? std::atan2(b.y + 2.3f - (pl.y + 2.0f), std::max(dist, 1.0f)) : 0.0f;
@@ -4030,6 +4454,34 @@ static void botUpdate(float dt) {
     if (sd < minD && sd > 1e-4f) { b.x = pl.x + sx / sd * minD; b.z = pl.z + sz / sd * minD; }
 }
 
+// Troca de mapa: monta as caixas, recalcula a luz e ajusta o fundo e a neblina. So faz algo se g_map mudou (a escolha
+// na tela de modo de jogo ou na sala; na rede, o mapa que o anfitriao mandou).
+static float g_bakeMs = 0.0f;       // quanto demorou a ultima montagem
+static void ensureWorld() {
+    if (g_worldMap == g_map) return;
+    LARGE_INTEGER fq, t0, t1;
+    QueryPerformanceFrequency(&fq);
+    QueryPerformanceCounter(&t0);
+    g_worldMap = g_map;
+    initWorld();
+    buildWorld();
+    g_navBuilt = false;
+    g_decalCount = g_decalNext = 0;
+    g_parts.clear();
+    g_proj.clear();
+    static const float FOG[NUM_MAPS][6] = {                 // cor, inicio e fim da neblina
+        { 0.08f, 0.09f, 0.11f, 1.0f, 45.0f, 210.0f },       // galpao: fundo escuro
+        { 0.90f, 0.83f, 0.71f, 1.0f, 70.0f, 520.0f },       // deserto: poeira clara no horizonte
+        { 0.96f, 0.96f, 0.96f, 1.0f, 5.0f, 80.0f } };       // sala branca: nevoa branca e fechada
+    const float* fg = FOG[g_worldMap];
+    glClearColor(fg[0], fg[1], fg[2], 1.0f);
+    glFogfv(GL_FOG_COLOR, fg);
+    glFogf(GL_FOG_START, fg[4]);
+    glFogf(GL_FOG_END, fg[5]);
+    QueryPerformanceCounter(&t1);
+    g_bakeMs = (float)((double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)fq.QuadPart);
+}
+
 static void respawnPlayer() {
     g_playerDead = false;
     g_playerFall = 0.0f;
@@ -4074,6 +4526,7 @@ static void respawnPlayer() {
 // Comeca a partida: zera o placar e prepara o oponente -- o bot (genero oposto) ou, na rede, os outros jogadores da
 // sala (que aparecem no mapa quando chegar o estado de cada um).
 static void startMatch() {
+    ensureWorld();
     g_scorePlayer = g_scoreBot = 0;
     g_myKills = 0;
     g_lastHitBy = -1;
@@ -4378,8 +4831,11 @@ static void renderLobby(HDC hdc, const Font& big, const Font& mid, const Font& s
             snprintf(line, sizeof(line), sel ? "> %s <" : "%s", LOBBY_ITEMS[i]);
             drawText(hdc, mid, line, cx, cy + 50.0f - i * 60.0f, sel ? 1.0f : 0.75f, sel ? 0.9f : 0.75f, sel ? 0.3f : 0.75f);
         }
-        drawText(hdc, small, "Na rede: at\xE9 8 jogadores, todos na mesma rede (Wi-Fi ou cabo).", cx, cy - 150.0f, 0.75f, 0.75f, 0.75f);
-        drawText(hdc, small, "W / S ou setas: escolher     Enter: confirmar     Esc: voltar", cx, 30.0f, 1.0f, 1.0f, 1.0f);
+        snprintf(line, sizeof(line), "Mapa:   <   %s   >", MAP_NAMES[g_map]);
+        drawText(hdc, tag, line, cx, cy - 124.0f, 1.0f, 0.9f, 0.3f);
+        drawText(hdc, small, MAP_INFO[g_map], cx, cy - 152.0f, 0.8f, 0.8f, 0.8f);
+        drawText(hdc, small, "Na rede: at\xE9 8 jogadores, todos na mesma rede (Wi-Fi ou cabo).", cx, cy - 200.0f, 0.75f, 0.75f, 0.75f);
+        drawText(hdc, small, "W / S: escolher     A / D: trocar o mapa     Enter: confirmar     Esc: voltar", cx, 30.0f, 1.0f, 1.0f, 1.0f);
     } else if (g_state == STATE_ROOM) {
         bool host = g_net == NET_HOST;
         std::string hostName = host ? displayName() : playerName(0);
@@ -4388,7 +4844,9 @@ static void renderLobby(HDC hdc, const Font& big, const Font& mid, const Font& s
         drawText(hdc, mid, line, cx, cy + 205.0f, 1.0f, 0.9f, 0.3f);
         snprintf(line, sizeof(line), g_mode == MODE_TEAMS ? "Duas equipes. Vence a primeira que somar %d abates." :
                                                             "Cada um por si. Vence quem chegar primeiro a %d abates.", killLimit());
-        drawText(hdc, small, line, cx, cy + 170.0f, 0.8f, 0.8f, 0.8f);
+        drawText(hdc, small, line, cx, cy + 172.0f, 0.8f, 0.8f, 0.8f);
+        snprintf(line, sizeof(line), host ? "Mapa: %s   (M troca)" : "Mapa: %s", MAP_NAMES[g_map]);
+        drawText(hdc, small, line, cx, cy + 146.0f, 1.0f, 0.9f, 0.3f);
 
         // quem esta na sala, pelo numero (o anfitriao e o 0)
         struct Entry { int id; std::string name; int team; };
@@ -4405,14 +4863,14 @@ static void renderLobby(HDC hdc, const Font& big, const Font& mid, const Font& s
         };
         for (int col = 0; col < (g_mode == MODE_TEAMS ? 2 : 1); ++col) {
             float x = g_mode == MODE_TEAMS ? cx + (col == 0 ? -190.0f : 190.0f) : cx;
-            if (g_mode == MODE_TEAMS) drawText(hdc, tag, col == 0 ? "EQUIPE AZUL" : "EQUIPE VERMELHA", x, cy + 120.0f,
+            if (g_mode == MODE_TEAMS) drawText(hdc, tag, col == 0 ? "EQUIPE AZUL" : "EQUIPE VERMELHA", x, cy + 110.0f,
                                                TEAM_RGB[col][0], TEAM_RGB[col][1], TEAM_RGB[col][2]);
-            else drawText(hdc, tag, "JOGADORES", x, cy + 120.0f, 1.0f, 1.0f, 1.0f);
+            else drawText(hdc, tag, "JOGADORES", x, cy + 110.0f, 1.0f, 1.0f, 1.0f);
             int row = 0;
             for (size_t k = 0; k < list.size(); ++k) {
                 if (g_mode == MODE_TEAMS && list[k].team != col) continue;
                 bool me = list[k].id == g_myId;
-                drawText(hdc, small, entryLine(list[k]).c_str(), x, cy + 84.0f - row * 30.0f, 1.0f, me ? 0.9f : 1.0f, me ? 0.3f : 1.0f);
+                drawText(hdc, small, entryLine(list[k]).c_str(), x, cy + 76.0f - row * 30.0f, 1.0f, me ? 0.9f : 1.0f, me ? 0.3f : 1.0f);
                 ++row;
             }
         }
@@ -4421,8 +4879,8 @@ static void renderLobby(HDC hdc, const Font& big, const Font& mid, const Font& s
         if (host) {
             drawText(hdc, small, "Nos outros PCs: \"Entrar em sala na rede\" (ou digite um destes IPs):", cx, cy - 200.0f, 1.0f, 1.0f, 1.0f);
             drawText(hdc, tag, g_localIPs.c_str(), cx, cy - 236.0f, 1.0f, 0.9f, 0.3f);
-            drawText(hdc, small, g_mode == MODE_TEAMS ? "A / D: modo     T: trocar de equipe     Enter: come\xE7" "ar     Esc: fechar a sala"
-                                                      : "A / D: modo     Enter: come\xE7" "ar a partida     Esc: fechar a sala",
+            drawText(hdc, small, g_mode == MODE_TEAMS ? "A / D: modo     M: mapa     T: equipe     Enter: come\xE7" "ar     Esc: fechar a sala"
+                                                      : "A / D: modo     M: mapa     Enter: come\xE7" "ar a partida     Esc: fechar a sala",
                      cx, 30.0f, 1.0f, 1.0f, 1.0f);
         } else {
             drawText(hdc, mid, blink ? "Aguardando o anfitri\xE3o come\xE7" "ar..." : "Aguardando o anfitri\xE3o come\xE7" "ar",
@@ -4442,7 +4900,8 @@ static void renderLobby(HDC hdc, const Font& big, const Font& mid, const Font& s
                 snprintf(line, sizeof(line), sel ? "> %s  (%s) <" : "%s  (%s)", fh.name, inet_ntoa(fh.addr.sin_addr));
                 float y = cy + 100.0f - (float)i * 70.0f;
                 drawText(hdc, mid, line, cx, y, sel ? 1.0f : 0.75f, sel ? 0.9f : 0.75f, sel ? 0.3f : 0.75f);
-                snprintf(line, sizeof(line), "%d / %d jogadores   -   %s%s", fh.players, MAX_PLAYERS, MODE_NAMES[fh.mode & 1],
+                snprintf(line, sizeof(line), "%d / %d jogadores   -   %s   -   %s%s", fh.players, MAX_PLAYERS, MODE_NAMES[fh.mode & 1],
+                         MAP_NAMES[fh.map % NUM_MAPS],
                          fh.players >= MAX_PLAYERS ? "   -   cheia" : (fh.phase != PH_LOBBY ? "   -   em jogo (d\xE1 para entrar)" : ""));
                 drawText(hdc, small, line, cx, y - 28.0f, 0.8f, 0.8f, 0.8f);
             }
@@ -4744,7 +5203,7 @@ static void renderPlay(HDC hdc, const Font& small, const Font& tag, bool ui) {
     }
 
     begin2D();
-    drawVignette(0.0f, 0.0f, 0.0f, 0.42f);             // bordas da tela levemente escuras
+    drawVignette(0.0f, 0.0f, 0.0f, g_worldMap == MAP_BRANCO ? 0.16f : 0.42f);    // bordas da tela levemente escuras
     if (g_hp <= 2 && !g_playerDead)                    // pouca vida: bordas vermelhas pulsando
         drawVignette(0.7f, 0.0f, 0.0f, (g_hp == 1 ? 0.34f : 0.20f) * (0.75f + 0.25f * std::sin(g_time * 5.0f)));
     if (g_hurtTimer > 0.0f)                            // levou um tiro: bordas vermelhas por um instante
@@ -5172,7 +5631,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 // Simulacao sem tela (Tiritos.exe --sim-test <arquivo>): roda o combate contra o bot por alguns segundos, sem desenhar,
 // e anota posicoes, vida, municao e estados. Cenario 0: jogador parado. Cenario 1: jogador atira no bot o tempo todo.
 static bool g_simQuick = false;     // --quick: pula as partidas simuladas e gera so as imagens
-static float g_bakeMs = 0.0f;       // quanto demorou para calcular a luz do cenario ao abrir
 
 static void runSimTest(const std::string& path, HDC hdc, const Font& big, const Font& mid, const Font& small, const Font& tag) {
     FILE* f = fopen(path.c_str(), "w");
@@ -5188,54 +5646,101 @@ static void runSimTest(const std::string& path, HDC hdc, const Font& big, const 
         glReadPixels(0, 0, g_width, g_height, GL_RGB, GL_UNSIGNED_BYTE, px.data());
         writeBmp((path + "_" + name + ".bmp").c_str(), g_width, g_height, px);
     };
-    // mapa visto de cima (sul embaixo), 4 pixels por unidade: obstaculos por tipo, luminarias e pontos de nascimento;
-    // e a conferencia do mapa: nenhum ponto de nascimento preso e todos alcancaveis a pe a partir do centro
+    // Para cada mapa: a vista de cima (sul embaixo, 4 pixels por unidade) com os obstaculos por tipo e os pontos de
+    // nascimento; a conferencia (nenhum nascimento preso, tudo alcancavel a pe, pecas atravessadas ou com um vao que nao
+    // da passagem) e algumas imagens do jogo de varios pontos.
     {
-        if (!g_navBuilt) buildNav();
-        const int S = 4, W = (int)(2 * ROOM_X) * S, H = (int)(2 * ROOM_Z) * S;
-        std::vector<unsigned char> px((size_t)W * H * 3);
-        auto put = [&](int x, int y, int r, int g, int b) {
-            if (x < 0 || y < 0 || x >= W || y >= H) return;
-            unsigned char* q = &px[((size_t)y * W + x) * 3];
-            q[0] = (unsigned char)r; q[1] = (unsigned char)g; q[2] = (unsigned char)b;
-        };
-        auto rect = [&](float x0, float z0, float x1, float z1, int r, int g, int b) {
-            for (int y = (int)((ROOM_Z - z1) * S); y < (int)((ROOM_Z - z0) * S); ++y)
-                for (int x = (int)((x0 + ROOM_X) * S); x < (int)((x1 + ROOM_X) * S); ++x) put(x, y, r, g, b);
-        };
-        rect(-ROOM_X, -ROOM_Z, ROOM_X, ROOM_Z, 70, 72, 78);
-        for (int iz = 0; iz < NAV_H; ++iz)
-            for (int ix = 0; ix < NAV_W; ++ix)
-                if (!g_navFree[iz][ix]) rect(navX(ix) - 1.25f, navZ(iz) - 1.25f, navX(ix) + 1.25f, navZ(iz) + 1.25f, 58, 60, 66);
-        for (int iz = 0; iz < LIGHT_NZ; ++iz)
-            for (int ix = 0; ix < LIGHT_NX; ++ix)
-                rect(lightX(ix) - LIGHT_HX, lightZ(iz) - LIGHT_HZ, lightX(ix) + LIGHT_HX, lightZ(iz) + LIGHT_HZ, 96, 96, 84);
-        static const int kc[6][3] = { { 0, 0, 0 }, { 150, 150, 160 }, { 200, 200, 190 }, { 60, 110, 190 }, { 170, 115, 55 }, { 230, 200, 60 } };
-        for (int i = NUM_WALLS; i < g_numObs; ++i) {
-            const Obstacle& o = g_obs[i];
-            rect(o.x - o.hw, o.z - o.hd, o.x + o.hw, o.z + o.hd, kc[o.kind][0], kc[o.kind][1], kc[o.kind][2]);
+        const int keepMap = g_map;
+        const GameState keepState = g_state;
+        for (int m = 0; m < NUM_MAPS; ++m) {
+            g_map = m;
+            ensureWorld();
+            buildNav();
+            const int S = 4, W = (int)(2 * ROOM_X) * S, H = (int)(2 * ROOM_Z) * S;
+            std::vector<unsigned char> px((size_t)W * H * 3);
+            auto put = [&](int x, int y, int r, int g, int b) {
+                if (x < 0 || y < 0 || x >= W || y >= H) return;
+                unsigned char* q = &px[((size_t)y * W + x) * 3];
+                q[0] = (unsigned char)r; q[1] = (unsigned char)g; q[2] = (unsigned char)b;
+            };
+            auto rect = [&](float x0, float z0, float x1, float z1, int r, int g, int b) {
+                for (int y = (int)((ROOM_Z - z1) * S); y < (int)((ROOM_Z - z0) * S); ++y)
+                    for (int x = (int)((x0 + ROOM_X) * S); x < (int)((x1 + ROOM_X) * S); ++x) put(x, y, r, g, b);
+            };
+            rect(-ROOM_X, -ROOM_Z, ROOM_X, ROOM_Z, 70, 72, 78);
+            for (int iz = 0; iz < NAV_H; ++iz)
+                for (int ix = 0; ix < NAV_W; ++ix)
+                    if (!g_navFree[iz][ix]) rect(navX(ix) - 1.25f, navZ(iz) - 1.25f, navX(ix) + 1.25f, navZ(iz) + 1.25f, 58, 60, 66);
+            if (m == MAP_GALPAO)
+                for (int iz = 0; iz < LIGHT_NZ; ++iz)
+                    for (int ix = 0; ix < LIGHT_NX; ++ix)
+                        rect(lightX(ix) - LIGHT_HX, lightZ(iz) - LIGHT_HZ, lightX(ix) + LIGHT_HX, lightZ(iz) + LIGHT_HZ, 96, 96, 84);
+            static const int kc[7][3] = { { 0, 0, 0 }, { 150, 150, 160 }, { 200, 200, 190 }, { 60, 110, 190 }, { 170, 115, 55 },
+                                          { 230, 200, 60 }, { 190, 120, 80 } };
+            int cross = 0, slit = 0;
+            for (int i = NUM_WALLS; i < g_numObs; ++i) {
+                const Obstacle& o = g_obs[i];
+                rect(o.x - o.hw, o.z - o.hd, o.x + o.hw, o.z + o.hd, kc[o.kind][0], kc[o.kind][1], kc[o.kind][2]);
+                for (int k = i + 1; k < g_numObs; ++k) {
+                    const Obstacle& b = g_obs[k];
+                    float ox = std::min(o.x + o.hw, b.x + b.hw) - std::max(o.x - o.hw, b.x - b.hw);
+                    float oz = std::min(o.z + o.hd, b.z + b.hd) - std::max(o.z - o.hd, b.z - b.hd);
+                    const float need = 2.0f * PLAYER_RADIUS + 0.2f;
+                    if (ox > 0.01f && oz > 0.01f) {
+                        ++cross;
+                        fprintf(f, "  pecas atravessadas: (%.1f, %.1f) e (%.1f, %.1f), %.1f x %.1f\n", o.x, o.z, b.x, b.z, ox, oz);
+                    } else if ((ox > 0.01f && oz < -0.01f && oz > -need) || (oz > 0.01f && ox < -0.01f && ox > -need)) {
+                        ++slit;
+                        fprintf(f, "  VAO ESTREITO entre (%.1f, %.1f) e (%.1f, %.1f): %.2f\n", o.x, o.z, b.x, b.z, -std::min(ox, oz));
+                    }
+                }
+            }
+            int gx, gz, bad = 0;
+            nearestFree(0.0f, 25.0f, gx, gz);
+            navField(gx, gz);
+            int nFree = 0, nReach = 0;
+            for (int iz = 0; iz < NAV_H; ++iz)
+                for (int ix = 0; ix < NAV_W; ++ix) { if (g_navFree[iz][ix]) ++nFree; if (g_navDist[iz][ix] >= 0) ++nReach; }
+            float minPair = 1e9f;
+            for (int i = 0; i < NUM_SPAWNS; ++i) {
+                float x = SPAWNS[i][0], z = SPAWNS[i][1];
+                bool blocked = blockedAt(x, z, PLAYER_RADIUS + 0.6f) || std::fabs(x) > ROOM_X - 2.0f || std::fabs(z) > ROOM_Z - 2.0f;
+                bool reach = g_navDist[navIZ(z)][navIX(x)] >= 0;
+                if (blocked || !reach) { ++bad; fprintf(f, "NASCIMENTO RUIM %d (%.0f, %.0f): %s\n", i, x, z, blocked ? "preso" : "sem caminho"); }
+                for (int k = 0; k < i; ++k)
+                    minPair = std::min(minPair, std::sqrt((x - SPAWNS[k][0]) * (x - SPAWNS[k][0]) + (z - SPAWNS[k][1]) * (z - SPAWNS[k][1])));
+                rect(x - 1.0f, z - 1.0f, x + 1.0f, z + 1.0f, z > 0.0f ? 80 : 255, z > 0.0f ? 150 : 90, z > 0.0f ? 255 : 80);
+            }
+            bool menuBlocked = blockedAt(0.0f, 25.0f, 4.5f);    // as telas de escolha precisam deste lugar livre
+            rect(-0.8f, 24.2f, 0.8f, 25.8f, 255, 255, 255);          // onde o jogador comeca contra o bot
+            writeBmp((path + "_mapa" + std::to_string(m) + ".bmp").c_str(), W, H, px);
+            fprintf(f, "mapa %d: %d obstaculos, celulas livres %d, alcancaveis %d, nascimentos %d (ruins %d, menor distancia entre dois %.1f), "
+                       "atravessadas %d, vaos estreitos %d, lugar das telas %s, luz calculada em %.0f ms\n",
+                    m, g_numObs - NUM_WALLS, nFree, nReach, NUM_SPAWNS, bad, minPair, cross, slit, menuBlocked ? "OCUPADO" : "livre", g_bakeMs);
+
+            g_state = STATE_PLAY;
+            g_choice = g_models[0].loaded ? 0 : 1;
+            startMatch();
+            static const float view[5][4] = {                   // x, z, direcao da camera, inclinacao
+                { 0.0f, 25.0f, 0.0f, 0.10f }, { -64.0f, 47.0f, -0.95f, 0.16f }, { 30.0f, -8.0f, 1.57f, 0.10f },
+                { 62.0f, -46.0f, 2.3f, 0.30f }, { -20.0f, 20.0f, 3.9f, 0.05f } };
+            for (int v = 0; v < 5; ++v) {
+                g_player.x = view[v][0]; g_player.z = view[v][1];
+                g_player.face = view[v][2] + PI;
+                g_camYaw = view[v][2]; g_camPitch = view[v][3];
+                g_bot.b.x = g_player.x - std::sin(g_camYaw) * 13.0f + std::cos(g_camYaw) * 2.5f;   // o bot parado na frente
+                g_bot.b.z = g_player.z - std::cos(g_camYaw) * 13.0f - std::sin(g_camYaw) * 2.5f;
+                g_bot.b.face = g_camYaw;
+                poseModel(g_models[g_choice], g_player.walkPhase, g_player.speed, g_time, smooth01(g_armBlend));
+                if (g_bot.active) poseModel(g_models[g_bot.model], g_bot.b.walkPhase, g_bot.b.speed, g_time, 1.0f);
+                snap(("mapa" + std::to_string(m) + "_" + std::to_string(v)).c_str());
+            }
+            g_bot = Bot();
         }
-        int gx, gz, bad = 0;
-        nearestFree(0.0f, 25.0f, gx, gz);
-        navField(gx, gz);
-        int nFree = 0, nReach = 0;
-        for (int iz = 0; iz < NAV_H; ++iz)
-            for (int ix = 0; ix < NAV_W; ++ix) { if (g_navFree[iz][ix]) ++nFree; if (g_navDist[iz][ix] >= 0) ++nReach; }
-        float minPair = 1e9f;
-        for (int i = 0; i < NUM_SPAWNS; ++i) {
-            float x = SPAWNS[i][0], z = SPAWNS[i][1];
-            bool blocked = blockedAt(x, z, PLAYER_RADIUS + 0.6f) || std::fabs(x) > ROOM_X - 2.0f || std::fabs(z) > ROOM_Z - 2.0f;
-            bool reach = g_navDist[navIZ(z)][navIX(x)] >= 0;
-            if (blocked || !reach) { ++bad; fprintf(f, "NASCIMENTO RUIM %d (%.0f, %.0f): %s\n", i, x, z, blocked ? "preso" : "sem caminho"); }
-            for (int k = 0; k < i; ++k)
-                minPair = std::min(minPair, std::sqrt((x - SPAWNS[k][0]) * (x - SPAWNS[k][0]) + (z - SPAWNS[k][1]) * (z - SPAWNS[k][1])));
-            rect(x - 1.0f, z - 1.0f, x + 1.0f, z + 1.0f, z > 0.0f ? 80 : 255, z > 0.0f ? 150 : 90, z > 0.0f ? 255 : 80);
-        }
-        rect(-0.8f, 24.2f, 0.8f, 25.8f, 255, 255, 255);          // onde o jogador comeca contra o bot
-        writeBmp((path + "_mapa.bmp").c_str(), W, H, px);
-        fprintf(f, "mapa: sala %.0f x %.0f, %d obstaculos, celulas livres %d, alcancaveis %d, nascimentos %d (ruins %d, menor distancia entre dois %.1f)\n",
-                2 * ROOM_X, 2 * ROOM_Z, g_numObs - NUM_WALLS, nFree, nReach, NUM_SPAWNS, bad, minPair);
-        fprintf(f, "luz do cenario calculada em %.0f ms\n\n", g_bakeMs);
+        g_map = keepMap;
+        ensureWorld();
+        g_state = keepState;
+        fprintf(f, "\n");
     }
     static const char* stateName[4] = { "PERSEGUE", "ATACA", "REPOSICIONA", "COBERTURA" };
     static const char* scenarioName[5] = { "jogador parado", "jogador atira no bot", "mulher joga, bot com 3 balas",
@@ -5680,7 +6185,7 @@ static void runNetTest(bool host, const std::string& path, HDC hdc, const Font& 
         if (g_state == STATE_PLAY && prevState != STATE_PLAY) {
             if (tPlay < 0.0f) tPlay = t;
             prevDead = true;                            // acabou de nascer: vai para a fila de teste
-            fprintf(f, "t=%6.2f entrou na partida %d\n", t, g_matchId);
+            fprintf(f, "t=%6.2f entrou na partida %d (mapa %d)\n", t, g_matchId, g_worldMap);
         }
         if (g_state != STATE_PLAY && prevState == STATE_PLAY) fprintf(f, "t=%6.2f voltou para a sala\n", t);
         prevState = g_state;
@@ -5783,6 +6288,13 @@ static int chooseMsaaFormat(HINSTANCE hInst) {
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR cmdLine, int) {
     std::string cmd = cmdLine ? cmdLine : "";
+    {   // --map N (testes): comeca no mapa N
+        size_t mp = cmd.find("--map ");
+        if (mp != std::string::npos) {
+            g_map = std::max(0, std::min((int)NUM_MAPS - 1, atoi(cmd.c_str() + mp + 6)));
+            cmd.erase(mp, 8);
+        }
+    }
     size_t netPos = cmd.find("--net-test");
     bool netTest = netPos != std::string::npos;
     size_t testPos = cmd.find("--anim-test");
@@ -5880,16 +6392,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR cmdLine, int) {
     Font fontSmall = makeFont(hdc, 20, FW_NORMAL);
     Font fontTag = makeFont(hdc, 26, FW_BOLD);
 
-    initWorld();
     initTextures();
-    {
-        LARGE_INTEGER fq, t0, t1;
-        QueryPerformanceFrequency(&fq);
-        QueryPerformanceCounter(&t0);
-        buildWorld();
-        QueryPerformanceCounter(&t1);
-        g_bakeMs = (float)((double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)fq.QuadPart);
-    }
+    ensureWorld();                      // monta o mapa escolhido (o galpao, a nao ser com --map N)
+    g_player.x = 0.0f;
+    g_player.z = 25.0f;                 // as telas de escolha acontecem aqui, de frente para o meio da arena
 
     if (netTest) {                      // --net-test host|join <arquivo>
         std::string rest = cmd.substr(netPos + strlen("--net-test"));
@@ -5991,6 +6497,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR cmdLine, int) {
             g_menu = MENU_NONE;
         }
         netSyncState();
+        ensureWorld();                  // o mapa escolhido (ou o que o anfitriao mandou) passa a ser o da tela
 
         // mouse: le o deslocamento em relacao ao centro e recentraliza
         float mdx = 0, mdy = 0;
@@ -6067,6 +6574,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR cmdLine, int) {
         } else if (g_state == STATE_LOBBY) {
             if (pressed(VK_UP) || pressed('W'))   g_lobbySel = (g_lobbySel + NUM_LOBBY_ITEMS - 1) % NUM_LOBBY_ITEMS;
             if (pressed(VK_DOWN) || pressed('S')) g_lobbySel = (g_lobbySel + 1) % NUM_LOBBY_ITEMS;
+            if (pressed(VK_LEFT) || pressed('A'))  g_map = (g_map + NUM_MAPS - 1) % NUM_MAPS;      // o fundo ja mostra o mapa
+            if (pressed(VK_RIGHT) || pressed('D')) g_map = (g_map + 1) % NUM_MAPS;
             if (pressed(VK_RETURN)) {
                 if (g_lobbySel == 0) {                  // contra o bot (a escolha de personagem e definitiva)
                     netClose();
@@ -6082,6 +6591,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR cmdLine, int) {
             // sala de espera: o anfitriao escolhe o modo e comeca; no modo Equipes cada um escolhe a sua com T
             if (g_net == NET_HOST && g_phase == PH_LOBBY) {
                 if (pressed(VK_LEFT) || pressed('A') || pressed(VK_RIGHT) || pressed('D')) { g_mode ^= 1; g_netStatus.clear(); }
+                if (pressed('M')) g_map = (g_map + 1) % NUM_MAPS;
                 if (pressed(VK_RETURN)) hostStartMatch();
             }
             if (pressed('T') && g_mode == MODE_TEAMS && g_phase == PH_LOBBY) g_myTeam ^= 1;

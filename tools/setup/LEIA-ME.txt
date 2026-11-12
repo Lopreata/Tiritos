@@ -1,7 +1,7 @@
 ﻿Tiritos
 =======
 
-Jogo de tiro em terceira pessoa num galpão fechado: você contra um bot, ou numa sala com até 8 pessoas na rede local (LAN).
+Jogo de tiro em terceira pessoa: você contra um bot, ou numa sala com até 8 pessoas na rede local (LAN).
 
 REQUISITOS
   Windows 10 ou 11 (64 bits). Não precisa instalar mais nada.
@@ -19,6 +19,13 @@ INSTALAR
 DESINSTALAR
   Configurações > Aplicativos > Aplicativos instalados > Tiritos > Desinstalar.
 
+MAPAS
+  Galpão       fechado e iluminado por cima, com muros, caixotes e containers.
+  Deserto      a céu aberto e árido, entre rochas, ruínas e sacos de areia.
+  Sala branca  tudo branco e com névoa: de longe quase não se vê nada.
+  Escolha na tela "Modo de jogo" com A / D (o fundo já mostra o mapa). Na rede, vale o mapa do anfitrião,
+  que também pode trocá-lo dentro da sala com M.
+
 CONTROLES
   W A S D  andar          Shift  correr        Espaço  pular
   Mouse    mirar          Botão esquerdo  atirar
@@ -28,7 +35,7 @@ CONTROLES
 JOGAR EM REDE (LAN) - ATÉ 8 JOGADORES
   1. Todos os computadores precisam estar na mesma rede (mesmo Wi-Fi ou cabo) e com a mesma versão do jogo.
   2. Em um deles (o anfitrião): escolha o personagem, o nome e "Criar sala na rede".
-     Na sala, A / D escolhe o modo:
+     Na sala, M troca o mapa e A / D escolhe o modo:
        - Todos contra todos: cada um por si; vence quem chegar primeiro a 15 abates.
        - Equipes: Azul contra Vermelha; vence a equipe que somar 25 abates primeiro.
          Cada jogador troca de equipe com T enquanto estiver na sala.

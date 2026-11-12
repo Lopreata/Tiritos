@@ -4,8 +4,8 @@
 1 ICON "assets/tiritos.ico"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION     1,3,1,0
-PRODUCTVERSION  1,3,1,0
+FILEVERSION     1,4,0,0
+PRODUCTVERSION  1,4,0,0
 FILEOS          VOS_NT_WINDOWS32
 FILETYPE        VFT_APP
 BEGIN
@@ -15,8 +15,8 @@ BEGIN
         BEGIN
             VALUE "ProductName",      "Tiritos"
             VALUE "FileDescription",  "Tiritos"
-            VALUE "FileVersion",      "1.3.1"
-            VALUE "ProductVersion",   "1.3.1"
+            VALUE "FileVersion",      "1.4.0"
+            VALUE "ProductVersion",   "1.4.0"
             VALUE "InternalName",     "Tiritos"
             VALUE "OriginalFilename", "Tiritos.exe"
         END

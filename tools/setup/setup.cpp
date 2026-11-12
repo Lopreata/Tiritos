@@ -265,7 +265,7 @@ static int install(const Options& o) {
         HKEY k;
         if (RegCreateKeyExW(HKEY_CURRENT_USER, uninstallKey(o.regKey).c_str(), 0, NULL, 0, KEY_WRITE, NULL, &k, NULL) == ERROR_SUCCESS) {
             regString(k, L"DisplayName", L"Tiritos");
-            regString(k, L"DisplayVersion", L"1.3.1");
+            regString(k, L"DisplayVersion", L"1.4.0");
             regString(k, L"DisplayIcon", game);
             regString(k, L"InstallLocation", dir);
             regString(k, L"UninstallString", L"\"" + uninst + L"\" /uninstall");
