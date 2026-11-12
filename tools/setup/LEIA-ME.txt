@@ -1,0 +1,43 @@
+﻿Tiritos
+=======
+
+Jogo de tiro em terceira pessoa num galpão fechado: você contra um bot, ou numa sala com até 8 pessoas na rede local (LAN).
+
+REQUISITOS
+  Windows 10 ou 11 (64 bits). Não precisa instalar mais nada.
+
+INSTALAR
+  Rode o Tiritos_Setup.exe e responda às perguntas. O jogo vai para
+  %LOCALAPPDATA%\Programs\Tiritos e ganha atalhos no Menu Iniciar e na Área de Trabalho.
+
+  Na primeira vez, o Windows pode mostrar "O Windows protegeu o computador" (o instalador não tem
+  assinatura digital). Clique em "Mais informações" e depois em "Executar assim mesmo".
+
+  Sem instalar: use a versão portátil (Tiritos_portatil.zip). Extraia a pasta inteira e abra o Tiritos.exe
+  (a pasta "assets" precisa ficar ao lado dele).
+
+DESINSTALAR
+  Configurações > Aplicativos > Aplicativos instalados > Tiritos > Desinstalar.
+
+CONTROLES
+  W A S D  andar          Shift  correr        Espaço  pular
+  Mouse    mirar          Botão esquerdo  atirar
+  1 / 2    mão nua / arma R  recarregar        Esc  menu
+  Tab      placar (na rede)
+
+JOGAR EM REDE (LAN) - ATÉ 8 JOGADORES
+  1. Todos os computadores precisam estar na mesma rede (mesmo Wi-Fi ou cabo) e com a mesma versão do jogo.
+  2. Em um deles (o anfitrião): escolha o personagem, o nome e "Criar sala na rede".
+     Na sala, A / D escolhe o modo:
+       - Todos contra todos: cada um por si; vence quem chegar primeiro a 15 abates.
+       - Equipes: Azul contra Vermelha; vence a equipe que somar 25 abates primeiro.
+         Cada jogador troca de equipe com T enquanto estiver na sala.
+  3. Nos outros: "Entrar em sala na rede". A sala aparece na lista; aperte Enter.
+     Se não aparecer, digite o IP mostrado na tela do anfitrião. Dá para entrar mesmo com a partida em andamento.
+  4. Quando todos estiverem na sala, o anfitrião aperta Enter para começar. No fim, todos voltam para a sala.
+  5. Se o Windows perguntar sobre o firewall, permita o acesso na rede privada.
+     O jogo usa a porta UDP 27015.
+
+CRÉDITOS
+  Personagens: "Universal Base Characters" de Quaternius (quaternius.com), licença CC0
+  (veja licenca-modelos.txt).

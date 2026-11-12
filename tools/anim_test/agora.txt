@@ -1,0 +1,53 @@
+=== homem ===
+[andar]  velocidade 1.8 m/s, cadencia 1.29 ciclos/s
+  contato com o chao: perna E 65%, perna D 65%
+  deslize do pe apoiado: medio 0.25 m/s, maximo 1.92 m/s   (0 = pe preso ao chao)
+  altura do tornozelo vs chao: min -0.000 m, ponta do pe min -0.000 m (negativo = afunda), folga max 0.080 m
+  quadril: oscilacao vertical 0.085 m;  flexao maxima do joelho 57 graus
+  braco: balanco do ombro 42 graus (de -19 a +23);  cotovelo flexionado de 9 a 24 graus
+  aceleracao angular max (rad/s2): coxa 218, canela 204, pe 72, braco 24   (no ponto 61%, 91%, 56%, 5% do ciclo)
+
+[correr]  velocidade 5.0 m/s, cadencia 2.10 ciclos/s
+  contato com o chao: perna E 41%, perna D 41%
+  deslize do pe apoiado: medio 0.48 m/s, maximo 1.43 m/s   (0 = pe preso ao chao)
+  altura do tornozelo vs chao: min -0.000 m, ponta do pe min -0.001 m (negativo = afunda), folga max 0.214 m
+  quadril: oscilacao vertical 0.088 m;  flexao maxima do joelho 105 graus
+  braco: balanco do ombro 95 graus (de -46 a +49);  cotovelo flexionado de 64 a 87 graus
+  aceleracao angular max (rad/s2): coxa 470, canela 381, pe 389, braco 145   (no ponto 37%, 36%, 33%, 1% do ciclo)
+
+[passo lento]  velocidade 1.6 m/s, cadencia 1.23 ciclos/s
+  contato com o chao: perna E 65%, perna D 65%
+  deslize do pe apoiado: medio 0.23 m/s, maximo 1.73 m/s   (0 = pe preso ao chao)
+  altura do tornozelo vs chao: min -0.000 m, ponta do pe min -0.000 m (negativo = afunda), folga max 0.080 m
+  quadril: oscilacao vertical 0.071 m;  flexao maxima do joelho 56 graus
+  braco: balanco do ombro 39 graus (de -18 a +21);  cotovelo flexionado de 9 a 24 graus
+  aceleracao angular max (rad/s2): coxa 174, canela 159, pe 65, braco 20   (no ponto 61%, 91%, 6%, 5% do ciclo)
+
+=== mulher ===
+[andar]  velocidade 1.8 m/s, cadencia 1.29 ciclos/s
+  contato com o chao: perna E 65%, perna D 65%
+  deslize do pe apoiado: medio 0.23 m/s, maximo 1.90 m/s   (0 = pe preso ao chao)
+  altura do tornozelo vs chao: min -0.000 m, ponta do pe min -0.000 m (negativo = afunda), folga max 0.080 m
+  quadril: oscilacao vertical 0.090 m;  flexao maxima do joelho 58 graus
+  braco: balanco do ombro 42 graus (de -20 a +22);  cotovelo flexionado de 9 a 23 graus
+  aceleracao angular max (rad/s2): coxa 235, canela 199, pe 72, braco 24   (no ponto 61%, 91%, 56%, 5% do ciclo)
+
+[correr]  velocidade 5.0 m/s, cadencia 2.10 ciclos/s
+  contato com o chao: perna E 41%, perna D 41%
+  deslize do pe apoiado: medio 0.43 m/s, maximo 1.41 m/s   (0 = pe preso ao chao)
+  altura do tornozelo vs chao: min -0.000 m, ponta do pe min -0.001 m (negativo = afunda), folga max 0.213 m
+  quadril: oscilacao vertical 0.096 m;  flexao maxima do joelho 106 graus
+  braco: balanco do ombro 95 graus (de -47 a +49);  cotovelo flexionado de 63 a 86 graus
+  aceleracao angular max (rad/s2): coxa 480, canela 394, pe 389, braco 145   (no ponto 37%, 36%, 33%, 1% do ciclo)
+
+[passo lento]  velocidade 1.6 m/s, cadencia 1.23 ciclos/s
+  contato com o chao: perna E 65%, perna D 65%
+  deslize do pe apoiado: medio 0.21 m/s, maximo 1.70 m/s   (0 = pe preso ao chao)
+  altura do tornozelo vs chao: min -0.000 m, ponta do pe min -0.000 m (negativo = afunda), folga max 0.080 m
+  quadril: oscilacao vertical 0.075 m;  flexao maxima do joelho 57 graus
+  braco: balanco do ombro 39 graus (de -18 a +21);  cotovelo flexionado de 9 a 23 graus
+  aceleracao angular max (rad/s2): coxa 182, canela 160, pe 65, braco 20   (no ponto 61%, 91%, 6%, 5% do ciclo)
+
+dedo indicador (parado): dx +0.016  dy -0.171  dz +0.061
+dedo indicador (andando): dx +0.012  dy -0.181  dz +0.003
+dedo indicador (correndo): dx -0.016  dy -0.145  dz +0.078

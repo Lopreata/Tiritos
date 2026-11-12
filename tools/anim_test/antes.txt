@@ -1,0 +1,14 @@
+[animacao antiga - andar]  velocidade 5.0 m/s, cadencia 1.75 ciclos/s
+  contato com o chao: perna E 69%, perna D 69%
+  deslize do pe apoiado: medio 4.00 m/s, maximo 11.42 m/s   (0 = pe preso ao chao)
+  altura do tornozelo vs chao: min -0.042 m, ponta do pe min -0.034 m (negativo = afunda), folga max 0.198 m
+  quadril: oscilacao vertical 0.113 m;  flexao maxima do joelho 47 graus
+  aceleracao angular max (rad/s2): coxa 66, canela 1717, pe 687, braco 60
+
+[animacao antiga - correr]  velocidade 9.0 m/s, cadencia 3.15 ciclos/s
+  contato com o chao: perna E 67%, perna D 67%
+  deslize do pe apoiado: medio 8.12 m/s, maximo 24.33 m/s   (0 = pe preso ao chao)
+  altura do tornozelo vs chao: min -0.072 m, ponta do pe min -0.062 m (negativo = afunda), folga max 0.324 m
+  quadril: oscilacao vertical 0.205 m;  flexao maxima do joelho 62 graus
+  aceleracao angular max (rad/s2): coxa 294, canela 7585, pe 3034, braco 264
+

@@ -1,0 +1,27 @@
+// Recursos do instalador: icone e versao. (Sendo 64 bits, o Windows nao trata o nome "Setup" como pedido de administrador.)
+#include <winver.h>
+
+1 ICON "../../assets/tiritos.ico"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     1,3,1,0
+PRODUCTVERSION  1,3,1,0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "041604B0"
+        BEGIN
+            VALUE "ProductName",      "Tiritos"
+            VALUE "FileDescription",  "Instalador do Tiritos"
+            VALUE "FileVersion",      "1.3.1"
+            VALUE "ProductVersion",   "1.3.1"
+            VALUE "OriginalFilename", "Tiritos_Setup.exe"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0416, 1200
+    END
+END

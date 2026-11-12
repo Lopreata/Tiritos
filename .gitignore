@@ -1,0 +1,9 @@
+# gerados pela compilacao (build.bat / tools\make_release.bat)
+*.exe
+*.o
+*.res
+dist/
+
+# saidas dos testes
+tools/sim_test/
+tools/anim_test/resultado*
