@@ -193,12 +193,34 @@ static const char* COLOR_NAMES[NUM_COLORS] = { "Preto", "Castanho", "Loiro", "Ru
 enum NetMode { NET_NONE, NET_HOST, NET_JOIN };
 static NetMode g_net = NET_NONE;
 static const int MAX_PLAYERS = 8;
-enum GameMode { MODE_FFA, MODE_TEAMS };
+enum GameMode { MODE_FFA, MODE_TEAMS, MODE_CTF, NUM_MODES };
 enum RoomPhase { PH_LOBBY, PH_PLAY, PH_END };    // sala de espera, partida, fim (placar final antes de voltar a sala)
-static const char* const MODE_NAMES[2] = { "Todos contra todos", "Equipes" };
-static const int KILL_LIMIT[2] = { 15, 25 };
+static const char* const MODE_NAMES[NUM_MODES] = { "Todos contra todos", "Equipes", "Captura da bandeira" };
+static const int KILL_LIMIT[NUM_MODES] = { 15, 25, 3 };  // abates para vencer (na captura da bandeira: capturas)
 static const float END_TIME = 8.0f;              // segundos mostrando o placar final
 static int   g_mode = MODE_FFA, g_phase = PH_LOBBY;
+static bool teamMode() { return g_mode != MODE_FFA; }  // Equipes e Captura da bandeira: azul contra vermelha
+
+// Captura da bandeira: cada equipe tem uma base junto a parede do fundo (azul ao sul, vermelha ao norte), onde fica a
+// sua bandeira e onde os seus jogadores renascem. Quem encosta na bandeira inimiga passa a carrega-la; ponto para a
+// equipe quando ele chega com ela ao lugar da propria bandeira, que precisa estar em casa. Se o portador for eliminado
+// a bandeira cai ali: um inimigo pode pega-la de novo, um companheiro a devolve encostando, e sozinha ela volta para a
+// base depois de FLAG_RETURN_TIME.
+enum FlagState { FL_HOME, FL_CARRIED, FL_DROPPED };
+enum FlagWhy { FW_NONE, FW_TAKEN, FW_DROPPED, FW_RETURNED, FW_TIMEOUT, FW_CAPTURED };   // o que aconteceu por ultimo
+struct Flag { int state, carrier; float x, y, z, timer; int why, by, n; };   // by: quem fez; n: contador de mudancas
+static Flag  g_flag[2];                          // [0] a bandeira azul, [1] a vermelha
+static int   g_caps[2] = { 0, 0 };               // capturas de cada equipe
+static const char* const FLAG_NAME[2] = { "azul", "vermelha" };
+static const float FLAG_REACH = 2.2f;            // distancia para pegar, devolver ou pontuar
+static const float FLAG_RETURN_TIME = 25.0f;     // segundos que a bandeira caida espera no chao
+static const float BASE_HALF = 46.0f, BASE_FRONT = 41.0f;   // a base vai de -BASE_HALF a +BASE_HALF, de BASE_FRONT ate a parede
+static const float BASE_POS[NUM_MAPS][2] = { { 6.0f, 46.0f }, { 2.0f, 46.0f }, { 0.0f, 46.0f } };   // lugar da bandeira azul em cada mapa
+static void basePos(int team, float& x, float& z) {        // o da vermelha e o mesmo ponto do outro lado do centro
+    const float* b = BASE_POS[g_worldMap < 0 ? 0 : g_worldMap];
+    x = team == 0 ? b[0] : -b[0];
+    z = team == 0 ? b[1] : -b[1];
+}
 static int   g_matchId = 0;                      // numero da partida atual (1..254), contado pelo anfitriao
 static int   g_myMatch = -1;                     // partida em que este jogo esta (startMatch)
 static int   g_winner = -1;                      // fim: numero do jogador (todos contra todos) ou da equipe
@@ -2804,7 +2826,7 @@ static void drawPlayer(const Player& p) {
     fx.vy = clampf(p.vy / (9.0f * SCALE), -1.0f, 1.0f);
     fx.land = p.land;
     Look lk = g_look[g_choice];
-    if (g_net != NET_NONE && g_mode == MODE_TEAMS) { lk.outfit = true; lk.team = g_myTeam == 0 ? 2 : 1; }   // colete da equipe
+    if (g_net != NET_NONE && teamMode()) { lk.outfit = true; lk.team = g_myTeam == 0 ? 2 : 1; }   // colete da equipe
     drawCharacter(p, g_choice, lk, smooth01(g_armBlend), g_flash, hurt, g_playerFall, fx);
 }
 
@@ -3057,19 +3079,20 @@ static void drawText(HDC, const Font& f, const char* s, float cx, float y, float
 
 // Texto centrado sobre um ponto do mundo (ex.: nome acima da cabeca), sempre de frente para a camera.
 // Tamanho fixo em pixels; some atras de objetos.
-static void drawText3D(HDC, const Font& f, const char* s, float x, float y, float z, float r, float g, float b) {
+static void drawText3D(HDC, const Font& f, const char* s, float x, float y, float z, float r, float g, float b, bool through = false) {
     float mv[16];
     glGetFloatv(GL_MODELVIEW_MATRIX, mv);
     float depth = -(mv[2] * x + mv[6] * y + mv[10] * z + mv[14]);
     if (depth < 0.3f || g_height <= 0) return;
     float fade = 1.0f;                                  // sala branca: o nome some na nevoa junto com o personagem
-    if (g_worldMap == MAP_BRANCO) { fade = clampf((75.0f - depth) / 35.0f, 0.0f, 1.0f); if (fade <= 0.0f) return; }
+    if (g_worldMap == MAP_BRANCO && !through) { fade = clampf((75.0f - depth) / 35.0f, 0.0f, 1.0f); if (fade <= 0.0f) return; }
     float px = 2.0f * depth * std::tan(30.0f * PI / 180.0f) / (float)g_height;      // tamanho de um pixel nessa distancia
     const float R[3] = { mv[0] * px, mv[4] * px, mv[8] * px }, U[3] = { mv[1] * px, mv[5] * px, mv[9] * px };
     const float o[3] = { x, y, z };
     float half = -textWidth(f, s) * 0.5f;
 
     glPushAttrib(GL_ENABLE_BIT | GL_DEPTH_BUFFER_BIT);
+    if (through) glDisable(GL_DEPTH_TEST);              // placa (base, bandeira): aparece mesmo atras de paredes
     glDisable(GL_LIGHTING);
     glDisable(GL_FOG);
     glEnable(GL_TEXTURE_2D);
@@ -3334,7 +3357,7 @@ static int remoteAt(const float p[3], int ownerId, int ownerTeam) {
     for (int i = 0; i < MAX_PLAYERS; ++i) {
         const Bot& r = g_rp[i];
         if (i == ownerId || i == g_myId || !r.present || !r.active || r.dead) continue;
-        if (g_mode == MODE_TEAMS && r.team == ownerTeam) continue;
+        if (teamMode() && r.team == ownerTeam) continue;
         if (insideCharacter(p, r.b)) return i;
     }
     return -1;
@@ -3457,7 +3480,7 @@ static void updateProjectiles(const Player& pl, float dt) {
 // perdem); o anfitriao repassa cada um a quem precisa. Quem atira decide se acertou e avisa so o atingido; o atingido
 // tira a propria vida e, ao ser eliminado, avisa todos quem o eliminou (e quem eliminou soma o abate).
 static const unsigned short NET_PORT = 27015;
-static const unsigned char NET_VERSION = 5;
+static const unsigned char NET_VERSION = 6;
 static const float NET_SEND_INTERVAL = 1.0f / 30.0f;
 static const float NET_TIMEOUT = 6.0f;
 enum NetMsg { NM_FIND = 1, NM_HERE, NM_HELLO, NM_WELCOME, NM_STATE, NM_BYE, NM_WORLD, NM_FULL };
@@ -3477,9 +3500,11 @@ struct NetBody {                        // o que cada jogador conta de si mesmo
 };
 struct NetState { NetHeader h; NetBody b; unsigned ack; unsigned char nEv; NetEvent ev[NET_MAX_EV]; };   // convidado -> anfitriao
 struct NetSlot { unsigned char used, model, hair, color, beard; char name[MAX_NAME + 1]; NetBody b; };
+struct NetFlag { unsigned char state, carrier, why, by, n, timer; float x, y, z; };
 struct NetWorld {                       // anfitriao -> convidado
     NetHeader h;
-    unsigned char mode, phase, match, winner, limit, map;
+    unsigned char mode, phase, match, winner, limit, map, caps[2];
+    NetFlag fl[2];                      // captura da bandeira: situacao das duas bandeiras
     unsigned ack;                       // ultimo evento deste convidado que o anfitriao ja aplicou
     NetSlot pl[MAX_PLAYERS];            // todos os jogadores da sala, pelo numero (o 0 e o anfitriao)
     unsigned char nEv;
@@ -3553,7 +3578,7 @@ static std::string localIPs() {
     return out.empty() ? "?" : out;
 }
 
-static int killLimit() { return g_killLimit > 0 ? g_killLimit : KILL_LIMIT[g_mode & 1]; }
+static int killLimit() { return g_killLimit > 0 ? g_killLimit : KILL_LIMIT[g_mode % NUM_MODES]; }
 
 // Quantos jogadores estao na sala, contando comigo.
 static int netPlayers() {
@@ -3724,7 +3749,7 @@ static void netApplyEvent(const NetEvent& e) {
         r.recoil = 1.0f; r.shotHold = SHOT_HOLD;
     } else if (e.type == EV_HIT) {
         if (e.dst != g_myId || g_playerDead || g_phase != PH_PLAY) return;
-        if (g_mode == MODE_TEAMS && r.team == g_myTeam) { ++g_teamHits; return; }
+        if (teamMode() && r.team == g_myTeam) { ++g_teamHits; return; }
         if (g_invuln <= 0.0f && g_hp > 0) {
             g_hurtDir[0] = r.b.x - g_player.x; g_hurtDir[1] = r.b.z - g_player.z;
             g_lastHitBy = src;
@@ -3798,6 +3823,18 @@ static void hostSendWorld(int i) {
     w.winner = g_winner < 0 ? 255 : (unsigned char)g_winner;
     w.limit = (unsigned char)killLimit();
     w.map = (unsigned char)g_map;
+    for (int t = 0; t < 2; ++t) {
+        const Flag& f = g_flag[t];
+        NetFlag& nf = w.fl[t];
+        nf.state = (unsigned char)f.state;
+        nf.carrier = f.carrier < 0 ? 255 : (unsigned char)f.carrier;
+        nf.why = (unsigned char)f.why;
+        nf.by = f.by < 0 ? 255 : (unsigned char)f.by;
+        nf.n = (unsigned char)f.n;
+        nf.timer = (unsigned char)clampf(f.timer + 0.99f, 0.0f, 255.0f);
+        nf.x = f.x; nf.y = f.y; nf.z = f.z;
+        w.caps[t] = (unsigned char)g_caps[t];
+    }
     NetLink& l = g_link[i];
     w.ack = l.lastEvIn;
     NetSlot& me = w.pl[0];
@@ -3831,6 +3868,100 @@ static void netTeamKills(int out[2]) {
         if (i != g_myId && g_rp[i].present) out[g_rp[i].team & 1] += g_rp[i].kills;
 }
 
+// ---- captura da bandeira (quem decide tudo e o anfitriao; os convidados recebem a situacao das bandeiras no WORLD)
+static void flagsReset() {
+    for (int t = 0; t < 2; ++t) {
+        Flag& f = g_flag[t];
+        f = Flag();
+        f.state = FL_HOME;
+        f.carrier = f.by = -1;
+        basePos(t, f.x, f.z);
+    }
+    g_caps[0] = g_caps[1] = 0;
+}
+
+// Onde esta um jogador da sala (eu ou outro) e de que equipe ele e -- so se estiver vivo, dentro da partida.
+static bool netAliveAt(int id, float& x, float& y, float& z, int& team) {
+    if (id < 0 || id >= MAX_PLAYERS) return false;
+    if (id == g_myId) {
+        if (g_playerDead || g_myMatch != g_matchId) return false;
+        x = g_player.x; y = g_player.y; z = g_player.z; team = g_myTeam & 1;
+        return true;
+    }
+    const Bot& r = g_rp[id];
+    if (!r.present || !r.active || r.dead) return false;
+    x = r.b.x; y = r.b.y; z = r.b.z; team = r.team & 1;
+    return true;
+}
+
+// Aviso no canto da tela sobre o que acabou de acontecer com a bandeira da equipe t (amarelo = bom para mim).
+static void flagAnnounce(int t) {
+    const Flag& f = g_flag[t];
+    if (f.why == FW_NONE) return;
+    const std::string who = playerName(f.by), fl = std::string("a bandeira ") + FLAG_NAME[t];
+    const bool mine = t == (g_myTeam & 1);
+    switch (f.why) {
+    case FW_TAKEN:    feedAdd(who + " pegou " + fl, mine ? 2 : 1); break;
+    case FW_DROPPED:  feedAdd(who + " derrubou " + fl, mine ? 1 : 2); break;
+    case FW_RETURNED: feedAdd(who + " devolveu " + fl + " \xE0 base", mine ? 1 : 2); break;
+    case FW_TIMEOUT:  feedAdd(std::string("A bandeira ") + FLAG_NAME[t] + " voltou para a base", mine ? 1 : 2); break;
+    case FW_CAPTURED: feedAdd(who + " capturou " + fl + "!", mine ? 2 : 1); break;
+    }
+}
+
+static void flagSet(int t, int state, int carrier, int why, int by) {
+    Flag& f = g_flag[t];
+    f.state = state; f.carrier = carrier; f.why = why; f.by = by;
+    f.n = (f.n + 1) & 255;
+    if (state == FL_HOME) { basePos(t, f.x, f.z); f.y = 0.0f; }
+    flagAnnounce(t);
+}
+
+// Regras, a cada quadro do anfitriao. Bandeira parada (na base ou caida): o inimigo que encostar leva; se estiver caida,
+// o companheiro que encostar devolve, e sozinha ela volta depois de FLAG_RETURN_TIME. Bandeira carregada: cai onde o
+// portador for eliminado (ou sair da sala) e vira ponto quando ele chega na propria base com a bandeira dele em casa.
+static void hostFlagsUpdate(float dt) {
+    if (g_mode != MODE_CTF || g_phase != PH_PLAY) return;
+    for (int t = 0; t < 2; ++t) {
+        Flag& f = g_flag[t];
+        float px = 0.0f, py = 0.0f, pz = 0.0f;
+        int team = 0;
+        if (f.state == FL_CARRIED) {
+            const int c = f.carrier;
+            if (!netAliveAt(c, px, py, pz, team) || team == t) {
+                f.y = groundHeightAt(f.x, f.z, f.y);
+                f.timer = FLAG_RETURN_TIME;
+                flagSet(t, FL_DROPPED, -1, FW_DROPPED, c);
+                continue;
+            }
+            f.x = px; f.y = py; f.z = pz;
+            float bx, bz;
+            basePos(team, bx, bz);
+            if (g_flag[team].state == FL_HOME && (px - bx) * (px - bx) + (pz - bz) * (pz - bz) < FLAG_REACH * FLAG_REACH) {
+                ++g_caps[team];
+                flagSet(t, FL_HOME, -1, FW_CAPTURED, c);
+            }
+            continue;
+        }
+        if (f.state == FL_DROPPED) {
+            f.timer -= dt;
+            if (f.timer <= 0.0f) { flagSet(t, FL_HOME, -1, FW_TIMEOUT, -1); continue; }
+        }
+        int best = -1, bestTeam = 0;
+        float bd = FLAG_REACH * FLAG_REACH;
+        for (int i = 0; i < MAX_PLAYERS; ++i) {
+            if (!netAliveAt(i, px, py, pz, team)) continue;
+            if (team == t && f.state == FL_HOME) continue;          // a propria bandeira, em casa
+            if (std::fabs(py - f.y) > 3.0f) continue;               // em outra altura (em cima de um caixote alto)
+            float d = (px - f.x) * (px - f.x) + (pz - f.z) * (pz - f.z);
+            if (d < bd) { bd = d; best = i; bestTeam = team; }
+        }
+        if (best < 0) continue;
+        if (bestTeam == t) flagSet(t, FL_HOME, -1, FW_RETURNED, best);
+        else flagSet(t, FL_CARRIED, best, FW_TAKEN, best);
+    }
+}
+
 // O anfitriao encerra a partida quando alguem (ou uma equipe) chega a meta; depois de END_TIME todos voltam para a sala.
 static void hostCheckEnd(float dt) {
     if (g_phase == PH_PLAY) {
@@ -3839,7 +3970,8 @@ static void hostCheckEnd(float dt) {
         for (int i = 0; i < MAX_PLAYERS; ++i)
             if (i != g_myId && g_rp[i].present && g_rp[i].kills > bestK) { bestK = g_rp[i].kills; best = i; }
         int win = -1;
-        if (g_mode == MODE_TEAMS) { if (tk[0] >= lim) win = 0; else if (tk[1] >= lim) win = 1; }
+        if (g_mode == MODE_CTF) { tk[0] = g_caps[0]; tk[1] = g_caps[1]; }       // aqui a meta e de capturas
+        if (teamMode()) { if (tk[0] >= lim) win = 0; else if (tk[1] >= lim) win = 1; }
         else if (bestK >= lim) win = best;
         if (win >= 0) { g_phase = PH_END; g_winner = win; g_endTimer = END_TIME; }
     } else if (g_phase == PH_END) {
@@ -3854,14 +3986,15 @@ static bool hostStartMatch() {
     cnt[g_myTeam & 1]++;
     for (int i = 0; i < MAX_PLAYERS; ++i) if (i != g_myId && g_rp[i].present) cnt[g_rp[i].team & 1]++;
     if (cnt[0] + cnt[1] < 2) { g_netStatus = "Precisa de pelo menos 2 jogadores na sala."; return false; }
-    if (g_mode == MODE_TEAMS && (cnt[0] == 0 || cnt[1] == 0)) {
-        g_netStatus = "No modo Equipes, cada equipe precisa de pelo menos 1 jogador (T troca a sua).";
+    if (teamMode() && (cnt[0] == 0 || cnt[1] == 0)) {
+        g_netStatus = "Cada equipe precisa de pelo menos 1 jogador (T troca a sua).";
         return false;
     }
     g_netStatus.clear();
     g_matchId = g_matchId % 254 + 1;
     g_phase = PH_PLAY;
     g_winner = -1;
+    flagsReset();
     return true;
 }
 
@@ -3881,12 +4014,26 @@ static void clientSendState() {
 static void clientApplyWorld(const NetWorld& w, int nEv) {
     NetLink& l = g_hostLink;
     while (!l.outbox.empty() && l.outbox.front().seq <= w.ack) l.outbox.erase(l.outbox.begin());   // o anfitriao ja recebeu
-    g_mode = w.mode & 1;
+    g_mode = w.mode < NUM_MODES ? w.mode : MODE_FFA;
     g_phase = w.phase <= PH_END ? w.phase : PH_LOBBY;
     g_matchId = w.match;
     g_winner = w.winner == 255 ? -1 : w.winner;
     g_killLimit = w.limit;
     g_map = w.map < NUM_MAPS ? w.map : MAP_GALPAO;      // o mapa e o do anfitriao (ensureWorld monta)
+    for (int t = 0; t < 2; ++t) {                       // bandeiras: copia a situacao e avisa o que mudou
+        const NetFlag& nf = w.fl[t];
+        Flag& f = g_flag[t];
+        bool changed = g_worldSeen && nf.n != (unsigned char)f.n;
+        f.state = nf.state <= FL_DROPPED ? nf.state : FL_HOME;
+        f.carrier = nf.carrier == 255 ? -1 : nf.carrier;
+        f.why = nf.why;
+        f.by = nf.by == 255 ? -1 : nf.by;
+        f.n = nf.n;
+        f.timer = (float)nf.timer;
+        f.x = nf.x; f.y = nf.y; f.z = nf.z;
+        g_caps[t] = w.caps[t];
+        if (changed && g_mode == MODE_CTF) flagAnnounce(t);
+    }
     for (int k = 0; k < MAX_PLAYERS; ++k) {
         if (k == g_myId) continue;
         const NetSlot& sl = w.pl[k];
@@ -3957,7 +4104,7 @@ static void netPoll(float dt) {
                 memcpy(g_found[i].name, m->name, MAX_NAME);
                 g_found[i].name[MAX_NAME] = 0;
                 g_found[i].players = m->players;
-                g_found[i].mode = m->mode & 1;
+                g_found[i].mode = m->mode < NUM_MODES ? m->mode : 0;
                 g_found[i].phase = m->phase;
                 g_found[i].map = m->map < NUM_MAPS ? m->map : 0;
                 g_found[i].age = 0.0f;
@@ -4003,7 +4150,7 @@ static void netPoll(float dt) {
                 g_connected = true;
                 g_myId = wm->id % MAX_PLAYERS;
                 g_myTeam = wm->team & 1;
-                g_mode = wm->mode & 1;
+                g_mode = wm->mode < NUM_MODES ? wm->mode : MODE_FFA;
                 g_phase = wm->phase <= PH_END ? wm->phase : PH_LOBBY;
                 g_matchId = wm->match;
                 g_hostLink.silence = 0.0f;
@@ -4102,6 +4249,7 @@ static void netPoll(float dt) {
             g_link[i].silence += dt;
             if (g_link[i].silence > NET_TIMEOUT) hostRemove(i, " caiu (sem resposta)");
         }
+        hostFlagsUpdate(dt);
         hostCheckEnd(dt);
         g_netSendT -= dt;
         if (g_netSendT <= 0.0f) {
@@ -4499,7 +4647,8 @@ static void respawnPlayer() {
         float best = -1.0f;
         for (int n = 0; n < NUM_SPAWNS; ++n) {
             int k = (n + g_myId * 5) % NUM_SPAWNS;
-            if (g_mode == MODE_TEAMS && (SPAWNS[k][1] > 0.0f) != (g_myTeam == 0)) continue;
+            if (teamMode() && (SPAWNS[k][1] > 0.0f) != (g_myTeam == 0)) continue;
+            if (g_mode == MODE_CTF && std::fabs(SPAWNS[k][0]) > BASE_HALF) continue;     // captura da bandeira: so dentro da base
             float nearest = 1e9f;
             for (int i = 0; i < MAX_PLAYERS; ++i) {
                 const Bot& r = g_rp[i];
@@ -4811,7 +4960,7 @@ static void renderLobby(HDC hdc, const Font& big, const Font& mid, const Font& s
         glTranslatef(0.0f, 0.0f, MENU_Z);
         glRotatef(g_time * 35.0f, 0, 1, 0);
         Look lk = g_look[g_choice];
-        if (g_state == STATE_ROOM && g_mode == MODE_TEAMS) { lk.outfit = true; lk.team = g_myTeam == 0 ? 2 : 1; }
+        if (g_state == STATE_ROOM && teamMode()) { lk.outfit = true; lk.team = g_myTeam == 0 ? 2 : 1; }
         drawModel(m, 1.0f, lk);
         drawWeapon(m, 0.0f);
         glPopMatrix();
@@ -4840,10 +4989,11 @@ static void renderLobby(HDC hdc, const Font& big, const Font& mid, const Font& s
         bool host = g_net == NET_HOST;
         std::string hostName = host ? displayName() : playerName(0);
         drawText(hdc, big, ("SALA DE " + hostName).c_str(), cx, g_height - 52.0f, 1.0f, 1.0f, 1.0f);
-        snprintf(line, sizeof(line), host ? "<   %s   >" : "Modo: %s", MODE_NAMES[g_mode & 1]);
+        snprintf(line, sizeof(line), host ? "<   %s   >" : "Modo: %s", MODE_NAMES[g_mode % NUM_MODES]);
         drawText(hdc, mid, line, cx, cy + 205.0f, 1.0f, 0.9f, 0.3f);
-        snprintf(line, sizeof(line), g_mode == MODE_TEAMS ? "Duas equipes. Vence a primeira que somar %d abates." :
-                                                            "Cada um por si. Vence quem chegar primeiro a %d abates.", killLimit());
+        snprintf(line, sizeof(line), g_mode == MODE_CTF ? "Leve a bandeira inimiga at\xE9 a sua base. Vence a equipe que fizer %d capturas." :
+                 (teamMode() ? "Duas equipes. Vence a primeira que somar %d abates."
+                             : "Cada um por si. Vence quem chegar primeiro a %d abates."), killLimit());
         drawText(hdc, small, line, cx, cy + 172.0f, 0.8f, 0.8f, 0.8f);
         snprintf(line, sizeof(line), host ? "Mapa: %s   (M troca)" : "Mapa: %s", MAP_NAMES[g_map]);
         drawText(hdc, small, line, cx, cy + 146.0f, 1.0f, 0.9f, 0.3f);
@@ -4861,14 +5011,14 @@ static void renderLobby(HDC hdc, const Font& big, const Font& mid, const Font& s
             if (e.id == g_myId) t += "  (voc\xEA)";
             return t;
         };
-        for (int col = 0; col < (g_mode == MODE_TEAMS ? 2 : 1); ++col) {
-            float x = g_mode == MODE_TEAMS ? cx + (col == 0 ? -190.0f : 190.0f) : cx;
-            if (g_mode == MODE_TEAMS) drawText(hdc, tag, col == 0 ? "EQUIPE AZUL" : "EQUIPE VERMELHA", x, cy + 110.0f,
+        for (int col = 0; col < (teamMode() ? 2 : 1); ++col) {
+            float x = teamMode() ? cx + (col == 0 ? -190.0f : 190.0f) : cx;
+            if (teamMode()) drawText(hdc, tag, col == 0 ? "EQUIPE AZUL" : "EQUIPE VERMELHA", x, cy + 110.0f,
                                                TEAM_RGB[col][0], TEAM_RGB[col][1], TEAM_RGB[col][2]);
             else drawText(hdc, tag, "JOGADORES", x, cy + 110.0f, 1.0f, 1.0f, 1.0f);
             int row = 0;
             for (size_t k = 0; k < list.size(); ++k) {
-                if (g_mode == MODE_TEAMS && list[k].team != col) continue;
+                if (teamMode() && list[k].team != col) continue;
                 bool me = list[k].id == g_myId;
                 drawText(hdc, small, entryLine(list[k]).c_str(), x, cy + 76.0f - row * 30.0f, 1.0f, me ? 0.9f : 1.0f, me ? 0.3f : 1.0f);
                 ++row;
@@ -4879,13 +5029,13 @@ static void renderLobby(HDC hdc, const Font& big, const Font& mid, const Font& s
         if (host) {
             drawText(hdc, small, "Nos outros PCs: \"Entrar em sala na rede\" (ou digite um destes IPs):", cx, cy - 200.0f, 1.0f, 1.0f, 1.0f);
             drawText(hdc, tag, g_localIPs.c_str(), cx, cy - 236.0f, 1.0f, 0.9f, 0.3f);
-            drawText(hdc, small, g_mode == MODE_TEAMS ? "A / D: modo     M: mapa     T: equipe     Enter: come\xE7" "ar     Esc: fechar a sala"
+            drawText(hdc, small, teamMode() ? "A / D: modo     M: mapa     T: equipe     Enter: come\xE7" "ar     Esc: fechar a sala"
                                                       : "A / D: modo     M: mapa     Enter: come\xE7" "ar a partida     Esc: fechar a sala",
                      cx, 30.0f, 1.0f, 1.0f, 1.0f);
         } else {
             drawText(hdc, mid, blink ? "Aguardando o anfitri\xE3o come\xE7" "ar..." : "Aguardando o anfitri\xE3o come\xE7" "ar",
                      cx, cy - 215.0f, 1.0f, 0.9f, 0.3f);
-            drawText(hdc, small, g_mode == MODE_TEAMS ? "T: trocar de equipe     Esc: sair da sala" : "Esc: sair da sala",
+            drawText(hdc, small, teamMode() ? "T: trocar de equipe     Esc: sair da sala" : "Esc: sair da sala",
                      cx, 30.0f, 1.0f, 1.0f, 1.0f);
         }
     } else {
@@ -4900,7 +5050,7 @@ static void renderLobby(HDC hdc, const Font& big, const Font& mid, const Font& s
                 snprintf(line, sizeof(line), sel ? "> %s  (%s) <" : "%s  (%s)", fh.name, inet_ntoa(fh.addr.sin_addr));
                 float y = cy + 100.0f - (float)i * 70.0f;
                 drawText(hdc, mid, line, cx, y, sel ? 1.0f : 0.75f, sel ? 0.9f : 0.75f, sel ? 0.3f : 0.75f);
-                snprintf(line, sizeof(line), "%d / %d jogadores   -   %s   -   %s%s", fh.players, MAX_PLAYERS, MODE_NAMES[fh.mode & 1],
+                snprintf(line, sizeof(line), "%d / %d jogadores   -   %s   -   %s%s", fh.players, MAX_PLAYERS, MODE_NAMES[fh.mode % NUM_MODES],
                          MAP_NAMES[fh.map % NUM_MAPS],
                          fh.players >= MAX_PLAYERS ? "   -   cheia" : (fh.phase != PH_LOBBY ? "   -   em jogo (d\xE1 para entrar)" : ""));
                 drawText(hdc, small, line, cx, y - 28.0f, 0.8f, 0.8f, 0.8f);
@@ -4914,6 +5064,152 @@ static void renderLobby(HDC hdc, const Font& big, const Font& mid, const Font& s
     if (!g_netStatus.empty())
         drawText(hdc, small, g_netStatus.c_str(), cx, 84.0f, 1.0f, 0.45f, 0.4f);
     end2D();
+}
+
+// ---- captura da bandeira: bases, bandeiras e avisos na tela
+static const float FLAG_RGB[2][3] = { { 0.16f, 0.42f, 1.0f }, { 0.96f, 0.16f, 0.12f } };   // azul, vermelha
+
+// Onde desenhar a bandeira da equipe t: na base, caida, ou junto de quem a carrega (carried; face = para onde ele olha).
+static void flagWorldPos(int t, float& x, float& y, float& z, float& face, bool& carried) {
+    const Flag& f = g_flag[t];
+    carried = false;
+    face = 0.0f;
+    x = f.x; y = f.y; z = f.z;
+    if (f.state != FL_CARRIED) return;
+    const Player* c = NULL;
+    if (f.carrier == g_myId) c = &g_player;
+    else if (f.carrier >= 0 && f.carrier < MAX_PLAYERS && g_rp[f.carrier].present) c = &g_rp[f.carrier].b;
+    if (c) { x = c->x; y = c->y; z = c->z; face = c->face; carried = true; }
+}
+
+// Mastro com o pano ondulando para o lado (dx, dz).
+static void drawFlagPole(float x, float y, float z, int team, float dx, float dz, float h) {
+    const float* c = FLAG_RGB[team];
+    const float w = 0.05f;
+    glColor3f(0.84f, 0.84f, 0.80f);
+    glBegin(GL_QUADS);                                      // mastro: dois retangulos cruzados
+    glVertex3f(x - w, y, z); glVertex3f(x + w, y, z); glVertex3f(x + w, y + h, z); glVertex3f(x - w, y + h, z);
+    glVertex3f(x, y, z - w); glVertex3f(x, y, z + w); glVertex3f(x, y + h, z + w); glVertex3f(x, y + h, z - w);
+    glEnd();
+    const int N = 8;
+    const float L = 1.6f, H = 1.0f, sx = -dz, sz = dx, ph = g_time * 6.0f + x * 0.7f + (float)team;
+    glBegin(GL_QUAD_STRIP);
+    for (int i = 0; i <= N; ++i) {
+        float u = (float)i / (float)N, wave = std::sin(ph - u * 5.0f) * 0.17f * u;
+        float px = x + dx * L * u + sx * wave, pz = z + dz * L * u + sz * wave;
+        float sh = 0.80f + 0.20f * std::cos(ph - u * 5.0f);
+        glColor3f(c[0] * sh, c[1] * sh, c[2] * sh);
+        glVertex3f(px, y + h, pz);
+        glVertex3f(px, y + h - H - 0.05f * std::sin(u * 3.0f + ph), pz);
+    }
+    glEnd();
+}
+
+static void drawGroundRing(float x, float y, float z, float r0, float r1, const float* c, float a) {
+    glColor4f(c[0], c[1], c[2], a);
+    glBegin(GL_QUAD_STRIP);
+    for (int i = 0; i <= 40; ++i) {
+        float th = 2.0f * PI * (float)(i % 40) / 40.0f, cs = std::cos(th), sn = std::sin(th);
+        glVertex3f(x + cs * r0, y, z + sn * r0);
+        glVertex3f(x + cs * r1, y, z + sn * r1);
+    }
+    glEnd();
+}
+
+// As duas bases (a faixa do piso junto a parede do fundo, na cor da equipe, e o pedestal) e as duas bandeiras.
+static void drawCtf() {
+    glDisable(GL_LIGHTING);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE);
+    for (int t = 0; t < 2; ++t) {
+        const float* c = FLAG_RGB[t];
+        const float s = t == 0 ? 1.0f : -1.0f, x0 = -BASE_HALF, x1 = BASE_HALF, z0 = s * BASE_FRONT, z1 = s * ROOM_Z, y = 0.025f, w = 0.35f;
+        glBegin(GL_QUADS);
+        glColor4f(c[0], c[1], c[2], 0.10f);
+        glVertex3f(x0, y, z0); glVertex3f(x1, y, z0); glVertex3f(x1, y, z1); glVertex3f(x0, y, z1);
+        glColor4f(c[0], c[1], c[2], 0.80f);                 // a linha da frente e as duas laterais
+        glVertex3f(x0, y, z0); glVertex3f(x1, y, z0); glVertex3f(x1, y, z0 + s * w); glVertex3f(x0, y, z0 + s * w);
+        glVertex3f(x0, y, z0); glVertex3f(x0 + w, y, z0); glVertex3f(x0 + w, y, z1); glVertex3f(x0, y, z1);
+        glVertex3f(x1 - w, y, z0); glVertex3f(x1, y, z0); glVertex3f(x1, y, z1); glVertex3f(x1 - w, y, z1);
+        glEnd();
+        float bx, bz;
+        basePos(t, bx, bz);
+        drawGroundRing(bx, y + 0.005f, bz, FLAG_REACH - 0.3f, FLAG_REACH, c, 0.85f);
+        const Flag& f = g_flag[t];
+        if (f.state == FL_DROPPED) {                        // caida: um anel pulsando marca o lugar
+            float k = 0.5f + 0.5f * std::sin(g_time * 5.0f);
+            drawGroundRing(f.x, f.y + 0.03f, f.z, 0.9f + 0.5f * k, 1.2f + 0.5f * k, c, 0.9f - 0.4f * k);
+        }
+    }
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
+    for (int t = 0; t < 2; ++t) {
+        float bx, bz, x, y, z, face;
+        bool carried;
+        basePos(t, bx, bz);
+        glPushMatrix();                                     // pedestal: escuro, com o tampo na cor da equipe
+        glTranslatef(bx, 0.2f, bz);
+        glColor3f(0.24f, 0.24f, 0.27f);
+        drawBox(1.1f, 0.4f, 1.1f);
+        glTranslatef(0.0f, 0.215f, 0.0f);
+        glColor3fv(FLAG_RGB[t]);
+        drawBox(0.9f, 0.03f, 0.9f);
+        glPopMatrix();
+        flagWorldPos(t, x, y, z, face, carried);
+        if (carried) {                                      // nas costas de quem leva, mais alta que a cabeca dele
+            float fx = std::sin(face), fz = std::cos(face);
+            drawFlagPole(x - fx * 0.32f, y + 1.0f, z - fz * 0.32f, t, -fx, -fz, 3.1f);
+        } else if (g_flag[t].state == FL_HOME) drawFlagPole(bx, 0.4f, bz, t, 1.0f, 0.0f, 3.4f);
+        else drawFlagPole(x, y, z, t, 1.0f, 0.0f, 3.1f);
+    }
+    glEnable(GL_LIGHTING);
+}
+
+// Placas que aparecem atraves das paredes, com a distancia: a minha base, a bandeira inimiga e a minha, se saiu de casa.
+static void drawCtfMarkers(HDC hdc, const Font& small) {
+    auto mark = [&](const char* text, float x, float y, float z, const float* c) {
+        char b[96];
+        float d = std::sqrt((x - g_player.x) * (x - g_player.x) + (z - g_player.z) * (z - g_player.z));
+        snprintf(b, sizeof(b), "%s  %.0f m", text, d);
+        drawText3D(hdc, small, b, x, y, z, c[0], c[1], c[2], true);
+    };
+    static const float ALERT[3] = { 1.0f, 0.85f, 0.25f };
+    const int me = g_myTeam & 1, en = 1 - me;
+    const Flag& mf = g_flag[me];
+    const Flag& ef = g_flag[en];
+    const bool iCarry = ef.state == FL_CARRIED && ef.carrier == g_myId;
+    float x, y, z, face;
+    bool carried;
+    basePos(me, x, z);
+    mark(iCarry ? "LEVE A BANDEIRA PARA C\xC1" : "SUA BASE", x, 5.8f, z, iCarry ? ALERT : TEAM_RGB[me]);
+    flagWorldPos(en, x, y, z, face, carried);
+    if (ef.state == FL_HOME) mark("BANDEIRA INIMIGA", x, 5.8f, z, TEAM_RGB[en]);
+    else if (ef.state == FL_DROPPED) mark("BANDEIRA INIMIGA CA\xCD" "DA", x, y + 4.4f, z, TEAM_RGB[en]);
+    else if (!iCarry) mark("COMPANHEIRO COM A BANDEIRA", x, y + 5.1f, z, TEAM_RGB[me]);
+    flagWorldPos(me, x, y, z, face, carried);
+    if (mf.state == FL_CARRIED) mark("LEVARAM A SUA BANDEIRA", x, y + 5.1f, z, ALERT);
+    else if (mf.state == FL_DROPPED) mark("DEVOLVA A SUA BANDEIRA", x, y + 4.4f, z, ALERT);
+}
+
+// Situacao das duas bandeiras, embaixo do placar, e o aviso de quem esta com a bandeira.
+static void drawCtfHud(HDC hdc, const Font& small, const Font& tag) {
+    float cx = g_width * 0.5f, y = g_height - 48.0f - 56.0f;
+    for (int t = 0; t < 2; ++t) {
+        const Flag& f = g_flag[t];
+        char b[96];
+        if (f.state == FL_HOME) snprintf(b, sizeof(b), "Bandeira %s: na base", FLAG_NAME[t]);
+        else if (f.state == FL_CARRIED) snprintf(b, sizeof(b), "Bandeira %s: com %s", FLAG_NAME[t], playerName(f.carrier).c_str());
+        else snprintf(b, sizeof(b), "Bandeira %s: no ch\xE3o (%.0f s)", FLAG_NAME[t], std::max(f.timer, 0.0f));
+        drawText(hdc, small, b, cx + (t == 0 ? -190.0f : 190.0f), y, TEAM_RGB[t][0], TEAM_RGB[t][1], TEAM_RGB[t][2]);
+    }
+    const Flag& ef = g_flag[1 - (g_myTeam & 1)];
+    if (ef.state == FL_CARRIED && ef.carrier == g_myId && !g_playerDead && g_phase == PH_PLAY) {
+        drawText(hdc, tag, "VOC\xCA EST\xC1 COM A BANDEIRA", cx, 124.0f, 1.0f, 0.9f, 0.3f);
+        drawText(hdc, small, g_flag[g_myTeam & 1].state == FL_HOME ? "Leve at\xE9 a sua base para pontuar"
+                                                                    : "Para pontuar, a sua bandeira precisa estar na base",
+                 cx, 96.0f, 1.0f, 1.0f, 1.0f);
+    }
 }
 
 // ---- placar da partida em rede
@@ -4939,7 +5235,7 @@ static void netScoreRows(std::vector<ScoreRow>& rows) {
 static void drawScoreboard(HDC hdc, const Font& small, const Font& tag) {
     std::vector<ScoreRow> rows;
     netScoreRows(rows);
-    bool teams = g_mode == MODE_TEAMS;
+    bool teams = teamMode();
     float cx = g_width * 0.5f, cy = g_height * 0.5f, rowH = 30.0f;
     float h = 140.0f + rows.size() * rowH, top = cy + h * 0.5f;
     panel2D(cx - 330.0f, top - h, cx + 330.0f, top, 0.75f);
@@ -4952,7 +5248,8 @@ static void drawScoreboard(HDC hdc, const Font& small, const Font& tag) {
     } else if (teams) {
         int tk[2];
         netTeamKills(tk);
-        snprintf(line, sizeof(line), "AZUL  %d   x   %d  VERMELHA", tk[0], tk[1]);
+        if (g_mode == MODE_CTF) snprintf(line, sizeof(line), "AZUL  %d   x   %d  VERMELHA   (capturas, meta %d)", g_caps[0], g_caps[1], killLimit());
+        else snprintf(line, sizeof(line), "AZUL  %d   x   %d  VERMELHA", tk[0], tk[1]);
     } else {
         snprintf(line, sizeof(line), "PLACAR  (meta: %d abates)", killLimit());
     }
@@ -4985,16 +5282,18 @@ static void drawScoreboard(HDC hdc, const Font& small, const Font& tag) {
 static void drawNetHud(HDC hdc, const Font& small, const Font& tag) {
     float cx = g_width * 0.5f, top = g_height - 48.0f;
     char buf[128], sub[128];
-    if (g_mode == MODE_TEAMS) {
+    if (teamMode()) {
         int tk[2];
         netTeamKills(tk);
+        if (g_mode == MODE_CTF) { tk[0] = g_caps[0]; tk[1] = g_caps[1]; }       // o placar e de capturas
         snprintf(buf, sizeof(buf), "AZUL  %d", tk[0]);
         drawText(hdc, tag, buf, cx - 95.0f, top, TEAM_RGB[0][0], TEAM_RGB[0][1], TEAM_RGB[0][2]);
         drawText(hdc, tag, "x", cx, top, 1.0f, 1.0f, 1.0f);
         snprintf(buf, sizeof(buf), "%d  VERMELHA", tk[1]);
         drawText(hdc, tag, buf, cx + 115.0f, top, TEAM_RGB[1][0], TEAM_RGB[1][1], TEAM_RGB[1][2]);
-        snprintf(sub, sizeof(sub), "Sua equipe: %s     Seus abates: %d     Meta: %d", g_myTeam == 0 ? "Azul" : "Vermelha",
-                 g_myKills, killLimit());
+        if (g_mode == MODE_CTF) snprintf(sub, sizeof(sub), "Sua equipe: %s     Capturas para vencer: %d", g_myTeam == 0 ? "Azul" : "Vermelha", killLimit());
+        else snprintf(sub, sizeof(sub), "Sua equipe: %s     Seus abates: %d     Meta: %d", g_myTeam == 0 ? "Azul" : "Vermelha",
+                      g_myKills, killLimit());
     } else {
         std::vector<ScoreRow> rows;
         netScoreRows(rows);
@@ -5005,6 +5304,7 @@ static void drawNetHud(HDC hdc, const Font& small, const Font& tag) {
         snprintf(sub, sizeof(sub), "Na frente: %s (%d)     Meta: %d abates", rows[0].name.c_str(), rows[0].kills, killLimit());
     }
     drawText(hdc, small, sub, cx, top - 28.0f, 0.8f, 0.8f, 0.8f);
+    if (g_mode == MODE_CTF) drawCtfHud(hdc, small, tag);
 
     float y = g_height - 40.0f;
     for (int i = (int)g_feed.size() - 1; i >= 0; --i) {
@@ -5109,6 +5409,7 @@ static void renderPlay(HDC hdc, const Font& small, const Font& tag, bool ui) {
 
     drawWorld();
     drawDecals();
+    if (g_net != NET_NONE && g_mode == MODE_CTF) drawCtf();
     // caido, a sombra acompanha o corpo deitado para tras
     Probe pr;
     lightProbe(p.x, p.y, p.z, pr);
@@ -5145,7 +5446,7 @@ static void renderPlay(HDC hdc, const Font& small, const Font& tag, bool ui) {
         if ((r.b.x - eye[0]) * cf[0] + (r.b.z - eye[2]) * cf[2] < -4.0f) continue;   // atras da camera: nem posa
         Look lk = r.look;
         lk.outfit = true;
-        lk.team = g_mode == MODE_TEAMS ? (r.team == 0 ? 2 : 1) : 1;
+        lk.team = teamMode() ? (r.team == 0 ? 2 : 1) : 1;
         drawOther(r, lk, smooth01(r.arm), 1.7f * (float)i);
     }
     // projeteis: o cubinho brilhante (amarelo do jogador, vermelho do adversario) e um rastro de luz atras dele
@@ -5154,7 +5455,7 @@ static void renderPlay(HDC hdc, const Font& small, const Font& tag, bool ui) {
     const float camF[3] = { -mv[2], -mv[6], -mv[10] };
     glDisable(GL_LIGHTING);
     // tiro de companheiro de equipe: azul
-    auto friendlyShot = [](int owner) { return owner >= 2 && g_mode == MODE_TEAMS && g_rp[owner - 2].team == g_myTeam; };
+    auto friendlyShot = [](int owner) { return owner >= 2 && teamMode() && g_rp[owner - 2].team == g_myTeam; };
     for (size_t i = 0; i < g_proj.size(); ++i) {
         if (g_proj[i].owner == 0) glColor3f(1.0f, 0.86f, 0.30f);
         else if (friendlyShot(g_proj[i].owner)) glColor3f(0.35f, 0.60f, 1.0f);
@@ -5201,6 +5502,7 @@ static void renderPlay(HDC hdc, const Font& small, const Font& tag, bool ui) {
         bool foe = netFoe(i);
         drawText3D(hdc, tag, r.name.c_str(), r.b.x, r.b.y + NAME_TAG_HEIGHT, r.b.z, foe ? 1.0f : 0.5f, foe ? 0.4f : 0.75f, foe ? 0.35f : 1.0f);
     }
+    if (g_net != NET_NONE && g_mode == MODE_CTF && g_phase == PH_PLAY) drawCtfMarkers(hdc, small);
 
     begin2D();
     drawVignette(0.0f, 0.0f, 0.0f, g_worldMap == MAP_BRANCO ? 0.16f : 0.42f);    // bordas da tela levemente escuras
@@ -5712,11 +6014,16 @@ static void runSimTest(const std::string& path, HDC hdc, const Font& big, const 
                 rect(x - 1.0f, z - 1.0f, x + 1.0f, z + 1.0f, z > 0.0f ? 80 : 255, z > 0.0f ? 150 : 90, z > 0.0f ? 255 : 80);
             }
             bool menuBlocked = blockedAt(0.0f, 25.0f, 4.5f);    // as telas de escolha precisam deste lugar livre
+            float b0x, b0z, b1x, b1z;                           // e os lugares das duas bandeiras tambem
+            basePos(0, b0x, b0z);
+            basePos(1, b1x, b1z);
+            bool baseBlocked = blockedAt(b0x, b0z, FLAG_REACH + 0.4f) || blockedAt(b1x, b1z, FLAG_REACH + 0.4f);
             rect(-0.8f, 24.2f, 0.8f, 25.8f, 255, 255, 255);          // onde o jogador comeca contra o bot
             writeBmp((path + "_mapa" + std::to_string(m) + ".bmp").c_str(), W, H, px);
             fprintf(f, "mapa %d: %d obstaculos, celulas livres %d, alcancaveis %d, nascimentos %d (ruins %d, menor distancia entre dois %.1f), "
-                       "atravessadas %d, vaos estreitos %d, lugar das telas %s, luz calculada em %.0f ms\n",
-                    m, g_numObs - NUM_WALLS, nFree, nReach, NUM_SPAWNS, bad, minPair, cross, slit, menuBlocked ? "OCUPADO" : "livre", g_bakeMs);
+                       "atravessadas %d, vaos estreitos %d, lugar das telas %s, bases %s, luz calculada em %.0f ms\n",
+                    m, g_numObs - NUM_WALLS, nFree, nReach, NUM_SPAWNS, bad, minPair, cross, slit, menuBlocked ? "OCUPADO" : "livre",
+                    baseBlocked ? "OCUPADAS" : "livres", g_bakeMs);
 
             g_state = STATE_PLAY;
             g_choice = g_models[0].loaded ? 0 : 1;
@@ -6044,6 +6351,98 @@ static void runSimTest(const std::string& path, HDC hdc, const Font& big, const 
         snap("rede_todos");
         g_phase = PH_END; g_winner = 1;
         snap("rede_fim");
+        // captura da bandeira: de frente para a base azul, com a bandeira vermelha nas costas; depois a azul caida
+        g_phase = PH_PLAY; g_winner = -1; g_mode = MODE_CTF;
+        flagsReset();
+        {
+            float bx, bz;
+            basePos(0, bx, bz);
+            g_player.x = bx + 2.0f; g_player.z = bz - 13.0f; g_player.face = 0.0f;
+            g_camYaw = PI; g_camPitch = 0.14f;
+            g_flag[1].state = FL_CARRIED; g_flag[1].carrier = 0;
+            g_caps[0] = 1; g_caps[1] = 2;
+            feedAdd("Jogador pegou a bandeira vermelha", 1);
+            for (int k = 0; k < 30; ++k) update(1.0f / 60.0f, 0.0f, 0.0f, false);
+            snap("rede_bandeira");
+            g_flag[1].state = FL_HOME; g_flag[1].carrier = -1; basePos(1, g_flag[1].x, g_flag[1].z);
+            g_flag[0].state = FL_DROPPED; g_flag[0].x = bx - 5.0f; g_flag[0].z = bz - 7.0f; g_flag[0].timer = 17.0f;
+            snap("rede_bandeira_caida");
+            g_player.x = 0.0f; g_player.z = 0.0f + (g_worldMap == MAP_GALPAO ? 14.0f : 22.0f); g_player.face = PI;
+            g_camYaw = 0.0f; g_camPitch = 0.10f;
+            for (int k = 0; k < 30; ++k) update(1.0f / 60.0f, 0.0f, 0.0f, false);
+            snap("rede_bandeira_longe");
+
+            // as regras, passo a passo, como o anfitriao as aplica: cada linha deve terminar em "ok"
+            auto step = [&](const char* what, bool ok) { fprintf(f, "bandeira: %-46s %s\n", what, ok ? "ok" : "ERRO"); };
+            auto away = [&]() { g_player.x = -40.0f; g_player.z = 0.0f; };
+            float rx, rz;
+            basePos(1, rx, rz);
+            flagsReset();
+            g_playerDead = false;
+            g_player.y = 0.0f;
+            for (int i = 1; i <= 3; ++i) { g_rp[i].b.x = 30.0f; g_rp[i].b.z = 3.0f * (float)i; g_rp[i].b.y = 0.0f; g_rp[i].dead = false; }
+            g_player.x = rx + 1.0f; g_player.z = rz;
+            hostFlagsUpdate(0.1f);
+            step("encostar na bandeira inimiga pega", g_flag[1].state == FL_CARRIED && g_flag[1].carrier == 0);
+            g_player.x = 10.0f; g_player.z = -20.0f;
+            hostFlagsUpdate(0.1f);
+            g_playerDead = true;
+            hostFlagsUpdate(0.1f);
+            step("portador eliminado: a bandeira cai ali", g_flag[1].state == FL_DROPPED && std::fabs(g_flag[1].x - 10.0f) < 0.01f &&
+                                                           std::fabs(g_flag[1].z + 20.0f) < 0.01f);
+            g_playerDead = false;
+            away();
+            g_rp[2].b.x = 10.5f; g_rp[2].b.z = -20.0f;                  // um azul encosta na vermelha caida
+            hostFlagsUpdate(0.1f);
+            step("inimigo pega a bandeira caida", g_flag[1].state == FL_CARRIED && g_flag[1].carrier == 2);
+            g_rp[2].dead = true;
+            hostFlagsUpdate(0.1f);
+            g_rp[2].dead = false; g_rp[2].b.x = 30.0f; g_rp[2].b.z = 6.0f;
+            g_rp[1].b.x = 10.0f; g_rp[1].b.z = -19.0f;                  // um vermelho encosta nela
+            hostFlagsUpdate(0.1f);
+            step("companheiro devolve a bandeira caida", g_flag[1].state == FL_HOME && g_flag[1].why == FW_RETURNED &&
+                                                         std::fabs(g_flag[1].x - rx) < 0.01f);
+            g_rp[1].b.x = 30.0f; g_rp[1].b.z = 3.0f;
+            g_player.x = rx; g_player.z = rz + 1.0f;
+            hostFlagsUpdate(0.1f);
+            g_player.x = 10.0f; g_player.z = -20.0f;
+            hostFlagsUpdate(0.1f);
+            g_playerDead = true;
+            hostFlagsUpdate(0.1f);
+            g_playerDead = false;
+            away();
+            hostFlagsUpdate(FLAG_RETURN_TIME - 1.0f);
+            bool still = g_flag[1].state == FL_DROPPED;
+            hostFlagsUpdate(2.0f);
+            step("caida, volta sozinha depois do tempo", still && g_flag[1].state == FL_HOME && g_flag[1].why == FW_TIMEOUT);
+            g_player.x = rx; g_player.z = rz + 1.0f;
+            hostFlagsUpdate(0.1f);
+            g_player.x = bx + 0.5f; g_player.z = bz;
+            hostFlagsUpdate(0.1f);
+            hostFlagsUpdate(0.1f);
+            step("levar ate a propria base pontua", g_caps[0] == 1 && g_caps[1] == 0 && g_flag[1].state == FL_HOME && g_flag[1].why == FW_CAPTURED);
+            away();
+            g_rp[1].b.x = bx; g_rp[1].b.z = bz - 1.0f;                  // um vermelho leva a azul
+            hostFlagsUpdate(0.1f);
+            bool taken = g_flag[0].state == FL_CARRIED && g_flag[0].carrier == 1;
+            g_rp[1].b.x = 30.0f; g_rp[1].b.z = 3.0f;
+            g_player.x = rx; g_player.z = rz + 1.0f;
+            hostFlagsUpdate(0.1f);
+            g_player.x = bx + 0.5f; g_player.z = bz;                    // chego na base com a vermelha, mas a azul esta fora
+            hostFlagsUpdate(0.1f);
+            hostFlagsUpdate(0.1f);
+            step("sem a propria bandeira em casa nao pontua", taken && g_caps[0] == 1 && g_flag[1].state == FL_CARRIED);
+            g_rp[1].present = false;                                    // quem levava a azul sai da sala
+            hostFlagsUpdate(0.1f);
+            step("portador saiu da sala: a bandeira cai", g_flag[0].state == FL_DROPPED);
+            g_rp[1].present = true;
+            g_rp[1].b.x = 30.0f; g_rp[1].b.z = -30.0f;
+            g_rp[2].b.x = g_flag[0].x; g_rp[2].b.z = g_flag[0].z + 1.0f;   // um azul devolve a azul: agora eu pontuo
+            hostFlagsUpdate(0.1f);
+            hostFlagsUpdate(0.1f);
+            step("com a bandeira de volta, a captura vale", g_caps[0] == 2 && g_flag[0].state == FL_HOME && g_flag[1].state == FL_HOME);
+            fprintf(f, "\n");
+        }
         for (int i = 0; i < MAX_PLAYERS; ++i) g_rp[i] = Bot();
         g_feed.clear();
         g_net = NET_NONE; g_phase = PH_LOBBY; g_mode = MODE_FFA; g_winner = -1; g_matchId = 0;
@@ -6083,7 +6482,7 @@ static void runSimTest(const std::string& path, HDC hdc, const Font& big, const 
 // inimigo visivel mais proximo e anotam o que veem: entradas e saidas, fases da sala, eliminacoes e o placar.
 static int   g_testPlayers = 2, g_testMatches = 1;
 static float g_testLeave = -1.0f;
-static bool  g_testTeams = false;
+static bool  g_testTeams = false, g_testCtf = false;
 static int   g_testLimit = 0;
 
 static void runNetTest(bool host, const std::string& path, HDC hdc, const Font& small, const Font& tag) {
@@ -6103,10 +6502,15 @@ static void runNetTest(bool host, const std::string& path, HDC hdc, const Font& 
         std::vector<ScoreRow> rows;
         netScoreRows(rows);
         std::string out;
+        if (g_mode == MODE_CTF) {
+            char c[80];
+            snprintf(c, sizeof(c), "[capturas %d x %d, bandeiras %d %d] ", g_caps[0], g_caps[1], g_flag[0].state, g_flag[1].state);
+            out = c;
+        }
         for (size_t i = 0; i < rows.size(); ++i) {
             char b[96];
             snprintf(b, sizeof(b), "%s%s %d/%d%s", i ? ", " : "", rows[i].name.c_str(), rows[i].kills, rows[i].deaths,
-                     g_mode == MODE_TEAMS ? (rows[i].team == 0 ? " az" : " vm") : "");
+                     teamMode() ? (rows[i].team == 0 ? " az" : " vm") : "");
             out += b;
         }
         return out;
@@ -6116,7 +6520,7 @@ static void runNetTest(bool host, const std::string& path, HDC hdc, const Font& 
     if (g_name.empty()) g_name = host ? "Anfitriao" : "Convidado";
     g_look[g_choice].hair = host ? 1 : 3;
     if (!netOpen(host, true)) { fprintf(f, "erro ao abrir a rede: %s\n", g_netStatus.c_str()); fclose(f); return; }
-    if (host) { g_mode = g_testTeams ? MODE_TEAMS : MODE_FFA; g_killLimit = g_testLimit; }
+    if (host) { g_mode = g_testCtf ? MODE_CTF : (g_testTeams ? MODE_TEAMS : MODE_FFA); g_killLimit = g_testLimit; }
     g_state = host ? STATE_ROOM : STATE_JOIN;
     fprintf(f, "papel: %s (%s)\n", host ? "anfitriao" : "convidado", displayName().c_str());
 
@@ -6129,7 +6533,7 @@ static void runNetTest(bool host, const std::string& path, HDC hdc, const Font& 
     float lastFeed = -1.0f;
     size_t prevProj = 0;
     GameState prevState = g_state;
-    while (t < 170.0f) {
+    while (t < (g_mode == MODE_CTF ? 300.0f : 170.0f)) {
         Sleep(10);
         MSG msg;                                        // mantem a janela respondendo (senao o Windows a da como travada)
         while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageA(&msg); }
@@ -6142,7 +6546,7 @@ static void runNetTest(bool host, const std::string& path, HDC hdc, const Font& 
         if (g_netLost) { fprintf(f, "t=%6.2f conexao encerrada: %s\n", t, g_netStatus.c_str()); break; }
         if (!host && !g_connected && !g_helloPending && !g_found.empty()) {
             fprintf(f, "t=%6.2f achou a sala de \"%s\" (%d jogadores, %s, %s)\n", t, g_found[0].name, g_found[0].players,
-                    MODE_NAMES[g_found[0].mode & 1], phaseName[g_found[0].phase % 3]);
+                    MODE_NAMES[g_found[0].mode % NUM_MODES], phaseName[g_found[0].phase % 3]);
             netConnect(g_found[0].addr);
         }
         if (!host && !g_connected && !g_helloPending && t > 15.0f) { fprintf(f, "nao entrou em 15 s (%s)\n", g_netStatus.c_str()); break; }
@@ -6169,7 +6573,7 @@ static void runNetTest(bool host, const std::string& path, HDC hdc, const Font& 
         if (g_phase != prevPhase) {
             fprintf(f, "t=%6.2f fase: %s", t, phaseName[g_phase % 3]);
             if (g_phase == PH_END) {
-                if (g_mode == MODE_TEAMS) fprintf(f, " (venceu a equipe %s)", g_winner == 0 ? "azul" : "vermelha");
+                if (teamMode()) fprintf(f, " (venceu a equipe %s)", g_winner == 0 ? "azul" : "vermelha");
                 else fprintf(f, " (venceu %s)", playerName(g_winner).c_str());
                 endLogT = t + 1.5f;
             }
@@ -6193,7 +6597,7 @@ static void runNetTest(bool host, const std::string& path, HDC hdc, const Font& 
         if (g_state != STATE_PLAY) { memcpy(g_prevKeys, g_keys, sizeof(g_keys)); continue; }
 
         // todos em fila no corredor leste (sem obstaculo entre eles), cada um no seu lugar
-        if (!g_playerDead && prevDead) { g_player.x = 41.5f; g_player.z = -21.0f + 6.0f * (float)g_myId; }
+        if (g_mode != MODE_CTF && !g_playerDead && prevDead) { g_player.x = 41.5f; g_player.z = -21.0f + 6.0f * (float)g_myId; }
         prevDead = g_playerDead;
         int tgt = -1;
         float bd = 1e9f;
@@ -6202,11 +6606,41 @@ static void runNetTest(bool host, const std::string& path, HDC hdc, const Font& 
             if (i == g_myId || !r.present || !r.active || r.dead || !netFoe(i)) continue;
             if (!lineOfSight(g_player.x, g_player.y + 2.0f, g_player.z, r.b.x, r.b.y + 2.0f, r.b.z)) continue;
             float d = std::fabs(r.b.z - g_player.z) + std::fabs(r.b.x - g_player.x);
+            if (g_mode == MODE_CTF && d > 45.0f) continue;
             if (d < bd) { bd = d; tgt = i; }
         }
         float tp = t - tPlay;
-        g_keys['A'] = g_keys['D'] = g_keys[VK_LBUTTON] = false;
-        if (!host) { bool r = ((int)(tp + 0.5f * g_myId) & 1) == 0; g_keys['D'] = r; g_keys['A'] = !r; }   // anda de lado
+        g_keys['A'] = g_keys['D'] = g_keys['W'] = g_keys[VK_SHIFT] = g_keys[VK_LBUTTON] = false;
+        if (g_mode == MODE_CTF) {
+            // Captura da bandeira: os jogadores 0 e 1 (um de cada equipe) vao buscar a bandeira inimiga; os outros guardam
+            // a base e atiram em quem aparece. Todos vao atras da propria bandeira quando ela sai de casa. Os atacantes e
+            // quem carrega a bandeira correm sem parar para atirar.
+            const Flag& ef = g_flag[1 - g_myTeam];
+            const Flag& mf = g_flag[g_myTeam];
+            bool carrying = ef.state == FL_CARRIED && ef.carrier == g_myId, cc;
+            float gx, gz, hx, hz, fy, ff;
+            basePos(g_myTeam, hx, hz);
+            if (carrying) { gx = hx; gz = hz; }
+            else if (mf.state != FL_HOME) flagWorldPos(g_myTeam, gx, fy, gz, ff, cc);
+            else if (g_myId < 2) flagWorldPos(1 - g_myTeam, gx, fy, gz, ff, cc);
+            else { gx = hx + ((g_myId & 2) ? 7.0f : -7.0f); gz = hz * 0.8f; }
+            if (carrying || g_myId < 2) tgt = -1;           // atacante e portador nao param para atirar
+            if (tgt < 0 && !g_playerDead) {
+                int cgx, cgz;
+                float tx = gx, tz = gz;
+                bool arrived = false;
+                if (nearestFree(gx, gz, cgx, cgz)) {
+                    navField(cgx, cgz);
+                    if (!navNextTarget(g_player, tx, tz, arrived) || arrived) { tx = gx; tz = gz; }
+                }
+                float ddx = tx - g_player.x, ddz = tz - g_player.z;
+                if (ddx * ddx + ddz * ddz > 0.25f) {
+                    g_camYaw = std::atan2(-ddx, -ddz);
+                    g_camPitch = 0.12f;
+                    g_keys['W'] = g_keys[VK_SHIFT] = true;
+                }
+            }
+        } else if (!host) { bool r = ((int)(tp + 0.5f * g_myId) & 1) == 0; g_keys['D'] = r; g_keys['A'] = !r; }   // anda de lado
         if (tgt >= 0 && !g_playerDead) {
             g_camPitch = 0.0f;
             for (int it = 0; it < 4; ++it) {
@@ -6417,6 +6851,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR cmdLine, int) {
         if (!opt("--leave").empty()) g_testLeave = (float)atof(opt("--leave").c_str());
         if (!opt("--name").empty()) g_name = opt("--name");
         g_testTeams = cmd.find("--teams") < netPos;
+        g_testCtf = cmd.find("--ctf") < netPos;
         size_t sp = rest.find(' ');
         std::string path = sp == std::string::npos ? (host ? "net_host.txt" : "net_join.txt") : rest.substr(sp + 1);
         path = path.substr(0, path.find_last_not_of(' ') + 1);
@@ -6590,11 +7025,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR cmdLine, int) {
         } else if (g_state == STATE_ROOM) {
             // sala de espera: o anfitriao escolhe o modo e comeca; no modo Equipes cada um escolhe a sua com T
             if (g_net == NET_HOST && g_phase == PH_LOBBY) {
-                if (pressed(VK_LEFT) || pressed('A') || pressed(VK_RIGHT) || pressed('D')) { g_mode ^= 1; g_netStatus.clear(); }
+                if (pressed(VK_LEFT) || pressed('A'))  { g_mode = (g_mode + NUM_MODES - 1) % NUM_MODES; g_netStatus.clear(); }
+                if (pressed(VK_RIGHT) || pressed('D')) { g_mode = (g_mode + 1) % NUM_MODES; g_netStatus.clear(); }
                 if (pressed('M')) g_map = (g_map + 1) % NUM_MAPS;
                 if (pressed(VK_RETURN)) hostStartMatch();
             }
-            if (pressed('T') && g_mode == MODE_TEAMS && g_phase == PH_LOBBY) g_myTeam ^= 1;
+            if (pressed('T') && teamMode() && g_phase == PH_LOBBY) g_myTeam ^= 1;
         } else if (g_state == STATE_JOIN) {
             if (pressed(VK_UP) || pressed('W'))   g_foundSel = std::max(g_foundSel - 1, 0);
             if (pressed(VK_DOWN) || pressed('S')) g_foundSel = std::min(g_foundSel + 1, std::max((int)g_found.size() - 1, 0));

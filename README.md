@@ -3,7 +3,13 @@
 Jogo de tiro em terceira pessoa para Windows, feito em C++ com OpenGL. A partida acontece numa arena de 150 × 110 m, em um de três mapas.
 
 - **Contra o bot:** você enfrenta um bot do gênero oposto.
-- **Em rede (LAN):** salas com até 8 jogadores. Quem cria a sala escolhe o modo, **Todos contra todos** ou **Equipes** (azul × vermelha). Aperte Tab para ver o placar.
+- **Em rede (LAN):** salas com até 8 jogadores. Quem cria a sala escolhe o modo: **Todos contra todos**, **Equipes** (azul × vermelha) ou **Captura da bandeira**. Aperte Tab para ver o placar.
+
+## Captura da bandeira
+
+Cada equipe tem uma base com a sua bandeira, uma em cada ponta do mapa, e renasce só nela. Encoste na bandeira inimiga para pegá-la e leve até a sua base: vale 1 ponto, desde que a sua bandeira esteja em casa. Vence a equipe que fizer 3 capturas.
+
+Quem leva a bandeira e é eliminado a deixa cair. O inimigo pode pegá-la de novo, um companheiro a devolve encostando nela, e sozinha ela volta para a base em 25 segundos.
 
 ## Mapas
 
@@ -38,7 +44,7 @@ tools\make_release.bat
 ```bat
 Tiritos.exe --anim-test <prefixo>
 Tiritos.exe [--map N] [--quick] --sim-test <arquivo>
-Tiritos.exe [--map N] [--players N] [--teams] [--limit K] [--matches M] --net-test host|join <arquivo>
+Tiritos.exe [--map N] [--players N] [--teams | --ctf] [--limit K] [--matches M] --net-test host|join <arquivo>
 ```
 
 - `--anim-test` testa o ciclo de passos.

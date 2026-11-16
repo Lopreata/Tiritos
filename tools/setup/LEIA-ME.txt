@@ -39,6 +39,12 @@ JOGAR EM REDE (LAN) - ATÉ 8 JOGADORES
        - Todos contra todos: cada um por si; vence quem chegar primeiro a 15 abates.
        - Equipes: Azul contra Vermelha; vence a equipe que somar 25 abates primeiro.
          Cada jogador troca de equipe com T enquanto estiver na sala.
+       - Captura da bandeira: Azul contra Vermelha, cada equipe com uma base e uma bandeira.
+         Encoste na bandeira inimiga para pegá-la e leve até a sua base: vale 1 ponto (a sua bandeira
+         precisa estar na base). Vence a equipe que fizer 3 capturas.
+         Quem leva a bandeira e é eliminado a deixa cair: o inimigo pode pegá-la de novo, um companheiro
+         a devolve encostando nela, e sozinha ela volta para a base em 25 segundos.
+         Cada equipe renasce só na própria base. As placas na tela mostram onde estão as bases e as bandeiras.
   3. Nos outros: "Entrar em sala na rede". A sala aparece na lista; aperte Enter.
      Se não aparecer, digite o IP mostrado na tela do anfitrião. Dá para entrar mesmo com a partida em andamento.
   4. Quando todos estiverem na sala, o anfitrião aperta Enter para começar. No fim, todos voltam para a sala.
